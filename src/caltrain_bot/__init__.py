@@ -7,7 +7,7 @@ load_dotenv()
 
 def main() -> None:
     app = build_app()
-    app.run_polling()
+    # app.run_polling()
 
 
 if __name__ == "__main__":
