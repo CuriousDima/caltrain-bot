@@ -9,6 +9,7 @@ settings = load_settings()
 schedule_manager = ScheduleManager(
     schedules_file=settings.gtfs_file_path,
     preprocess_sql=settings.preprocessing_sql_path,
+    use_in_memory_db=False,
 )
 
 
