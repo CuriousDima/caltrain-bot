@@ -26,5 +26,5 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def build_app():
     app = ApplicationBuilder().token(settings.telegram_bot_token).build()
     app.add_handler(CommandHandler("start", start))
-    print(schedule_manager.get_agencies())
+    print(schedule_manager.stations)
     return app

@@ -1,7 +1,9 @@
+from functools import cached_property
 from pathlib import Path
 
 import pygtfs
 import sqlparse
+from loguru import logger
 from sqlalchemy import text
 
 
@@ -24,18 +26,24 @@ class ScheduleManager:
         # Split the SQL into individual statements and execute them
         statements = sqlparse.split(sql)
         for statement in statements:
+            logger.info(f"Executing SQL statement: {statement}")
             self.schedule.session.execute(text(statement))
         self.schedule.session.commit()
 
-    def get_agencies(self):
-        """Returns a list of all agencies in the schedule."""
-        rows = self.schedule.session.execute(
-            text("""
-            SELECT agency_id, agency_name
-            FROM agency
-            ORDER BY agency_name
-        """)
-        ).fetchall()
-
-        for row in rows:
-            print(row.agency_id, row.agency_name)
+    @cached_property
+    def stations(
+        self,
+    ) -> tuple[str, ...]:  # variable-length tuple where every item is a str
+        """Returns a list of all stations in the schedule."""
+        return tuple(
+            # scalars() unwraps the first column of each row,
+            # so we get a flat list of station names
+            self.schedule.session.scalars(
+                # use ORDER BY for deterministic output
+                text("""
+                    SELECT DISTINCT origin_station_query_name
+                    FROM train_station_journeys
+                    ORDER BY origin_station_query_name
+                """)
+            )
+        )
