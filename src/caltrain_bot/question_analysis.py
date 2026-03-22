@@ -8,6 +8,16 @@ from loguru import logger
 from caltrain_bot.config import LLMSettings, OllamaSettings, OpenRouterSettings
 
 
+class QuestionsClassifier(dspy.Signature):
+    """Classify whether a question is asking about train schedules or not."""
+
+    question: str = dspy.InputField()
+    is_schedule_question: bool = dspy.OutputField(
+        desc="Whether the question is about train schedules"
+    )
+
+
+# also a signature, but it needs to be built dynamically after we load station names from the database
 def build_station_extraction_signature(
     stations: Sequence[str],
 ) -> type[dspy.Signature]:
@@ -95,18 +105,23 @@ class QuestionAnalyzer:
         self._lm: dspy.LM = _build_lm(llm_settings)
         # Make the LM available globally for all signatures to use when making predictions.
         dspy.configure(lm=self._lm)
-        # Build the station extraction signature and prediction object.
-        self._station_signature: type[dspy.Signature] = (
-            build_station_extraction_signature(stations)
+
+        self._question_classifier: dspy.Predict = dspy.Predict(QuestionsClassifier)
+        self._stations_departure_time_extractor: dspy.ReAct = dspy.ReAct(
+            build_station_extraction_signature(stations),
+            tools=[get_current_datetime, datetime_calculator],
         )
-        self._station_extractor: dspy.ReAct = dspy.ReAct(
-            self._station_signature, tools=[get_current_datetime, datetime_calculator]
-        )
+
+    def is_schedule_question(self, question: str) -> bool:
+        logger.info(f"Classifying question:\n{question}")
+        prediction = self._question_classifier(question=question)
+        logger.info(f"Classification verdict: {prediction}")
+        return prediction.is_schedule_question
 
     def extract_stations_and_departure_time(self, question: str) -> dspy.Prediction:
         logger.info(
             f"Extracting stations and departure time from question:\n{question}"
         )
-        r = self._station_extractor(question=question)
+        r = self._stations_departure_time_extractor(question=question)
         logger.info(f"Extraction result: {r}")
         return r

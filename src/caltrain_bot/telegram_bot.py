@@ -76,10 +76,15 @@ async def get_trains_info(
         await update.message.reply_text("Sorry, I can only process text messages.")
         return
     await update.message.reply_text(
-        "Analyzing your question and finding train information... give me a minute!"
+        "I am checking your question and looking up the train information now. Please give me a minute!"
     )
-    # TODO: check that the question is about train times and routes
-    prediction = analyzer.extract_stations_and_departure_time(update.message.text)
+    question = update.message.text
+    if not analyzer.is_schedule_question(question):
+        await update.message.reply_text(
+            "I can only help with Caltrain train schedules, routes, and stations."
+        )
+        return
+    prediction = analyzer.extract_stations_and_departure_time(question)
     trains = schedule_manager.get_trains(
         departure_station_query_name=prediction.departure_station,
         arrival_station_query_name=prediction.arrival_station,
