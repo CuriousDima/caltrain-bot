@@ -22,15 +22,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def build_app():
     settings = load_settings()
-    text2sql_convertor = Text2SqlConvertor(settings.llm)
-    print(text2sql_convertor.convert("Say this is a test!")[0])
-
     schedule_manager = ScheduleManager(
         schedules_file=settings.gtfs_file_path,
         preprocess_sql=settings.preprocessing_sql_path,
         use_in_memory_db=False,
     )
-    print(schedule_manager.stations)
+    text2sql_convertor = Text2SqlConvertor(settings.llm, schedule_manager.stations)
+    text2sql_convertor.convert("When is the next train from San Francisco to San Jose?")
+    print(
+        text2sql_convertor.convert("Next train from San Francisco to Palo Alto"),
+    )
 
     app = ApplicationBuilder().token(settings.telegram_bot_token).build()
     app.add_handler(CommandHandler("start", start))
