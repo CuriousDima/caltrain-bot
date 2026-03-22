@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 import dspy
+from loguru import logger
 
 from caltrain_bot.config import LLMSettings, OllamaSettings, OpenRouterSettings
 
@@ -85,8 +86,8 @@ def datetime_calculator(
     return new_dt.isoformat()
 
 
-class Text2SqlConvertor:
-    """Prepare and hold the DSPy LM used for text-to-SQL conversion."""
+class QuestionAnalyzer:
+    """Analyzes the user's question and extracts the departure station, arrival station, and departure time."""
 
     def __init__(self, llm_settings: LLMSettings, stations: Sequence[str]):
         # Construct the LM object after validating settings.
@@ -102,5 +103,10 @@ class Text2SqlConvertor:
             self._station_signature, tools=[get_current_datetime, datetime_calculator]
         )
 
-    def convert(self, question: str) -> dspy.Prediction:
-        return self._station_extractor(question=question)
+    def extract_stations_and_departure_time(self, question: str) -> dspy.Prediction:
+        logger.info(
+            f"Extracting stations and departure time from question:\n{question}"
+        )
+        r = self._station_extractor(question=question)
+        logger.info(f"Extraction result: {r}")
+        return r

@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from datetime import datetime
 from functools import cached_property
 from pathlib import Path
 
@@ -5,6 +7,21 @@ import pygtfs
 import sqlparse
 from loguru import logger
 from sqlalchemy import text
+
+
+@dataclass(frozen=True)
+class Train:
+    train_number: int
+    service_pattern: str
+    origin_station_id: str
+    origin_station_name: str
+    origin_station_query_name: str
+    origin_departure_timestamp: datetime
+    destination_station_id: str
+    destination_station_name: str
+    destination_station_query_name: str
+    destination_arrival_timestamp: datetime
+    travel_minutes: int
 
 
 def preprocess_schedule(schedule: pygtfs.Schedule, preprocess_sql: Path) -> None:
@@ -79,3 +96,54 @@ class ScheduleManager:
                 """)
             )
         )
+
+    def get_trains(
+        self,
+        departure_station_query_name: str,
+        arrival_station_query_name: str,
+        departure_time: datetime,
+    ) -> list[Train]:
+        """Returns a list of trains departing from the specified station and arriving at the specified station."""
+        rows = self.schedule.session.execute(
+            text("""
+                SELECT
+                    train_number,
+                    service_pattern,
+                    origin_station_id,
+                    origin_station_name,
+                    origin_station_query_name,
+                    origin_departure_timestamp,
+                    destination_station_id,
+                    destination_station_name,
+                    destination_station_query_name,
+                    destination_arrival_timestamp,
+                    travel_minutes
+                FROM train_station_journeys
+                WHERE origin_station_query_name = :departure_station_query_name
+                AND destination_station_query_name = :arrival_station_query_name
+                AND origin_departure_timestamp BETWEEN datetime(:departure_time, '-20 minutes') AND datetime(:departure_time, '+30 minutes')
+                ORDER BY origin_departure_timestamp
+            """),
+            {
+                "departure_station_query_name": departure_station_query_name,
+                "arrival_station_query_name": arrival_station_query_name,
+                "departure_time": departure_time.isoformat(),
+            },
+        ).fetchall()
+
+        return [
+            Train(
+                train_number=row.train_number,
+                service_pattern=row.service_pattern,
+                origin_station_id=row.origin_station_id,
+                origin_station_name=row.origin_station_name,
+                origin_station_query_name=row.origin_station_query_name,
+                origin_departure_timestamp=row.origin_departure_timestamp,
+                destination_station_id=row.destination_station_id,
+                destination_station_name=row.destination_station_name,
+                destination_station_query_name=row.destination_station_query_name,
+                destination_arrival_timestamp=row.destination_arrival_timestamp,
+                travel_minutes=row.travel_minutes,
+            )
+            for row in rows
+        ]
