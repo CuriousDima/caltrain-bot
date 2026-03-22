@@ -1,7 +1,7 @@
 import pytest
 
 from caltrain_bot.config import OllamaSettings, OpenRouterSettings, Provider
-from caltrain_bot.text2sql import _validate_provider
+from caltrain_bot.question_analysis import _validate_provider
 
 
 @pytest.mark.parametrize(

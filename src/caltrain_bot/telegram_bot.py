@@ -1,4 +1,5 @@
 import functools
+import os
 from datetime import datetime
 from html import escape
 
@@ -99,7 +100,7 @@ def build_app():
     schedule_manager = ScheduleManager(
         schedules_file=settings.gtfs_file_path,
         preprocess_sql=settings.preprocessing_sql_path,
-        use_in_memory_db=False,
+        use_in_memory_db=(os.getenv("DEBUG") != "1"),
     )
     analyzer = QuestionAnalyzer(settings.llm, schedule_manager.stations)
 
