@@ -23,11 +23,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def build_app():
     settings = load_settings()
     text2sql_convertor = Text2SqlConvertor(settings.llm)
-    print(
-        text2sql_convertor.convert(
-            "What time is the next train from San Francisco to San Jose?"
-        )
-    )
+    print(text2sql_convertor.convert("Say this is a test!")[0])
 
     schedule_manager = ScheduleManager(
         schedules_file=settings.gtfs_file_path,

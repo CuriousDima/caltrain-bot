@@ -78,5 +78,5 @@ class Text2SqlConvertor:
         self._lm = _build_configured_lm(llm_settings)
 
     def convert(self, question: str) -> str:
-        _ = question
-        return "dummy text"
+        response = self._lm(question)
+        return response
