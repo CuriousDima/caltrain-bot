@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 from typing import Literal
 
 import dspy
@@ -30,10 +31,12 @@ def build_station_extraction_signature(
                 "question": str,
                 "departure_station": station_literal,
                 "arrival_station": station_literal,
+                "departure_time": datetime,
             },
             "question": dspy.InputField(),
             "departure_station": dspy.OutputField(desc="Departure station"),
             "arrival_station": dspy.OutputField(desc="Arrival station"),
+            "departure_time": dspy.OutputField(desc="Approximate departure time"),
         },
     )
 
@@ -67,6 +70,21 @@ def _build_lm(settings: LLMSettings) -> dspy.LM:
             raise ValueError(f"Unsupported LLM provider: {settings.provider}")
 
 
+def get_current_datetime() -> str:
+    """Get the current date and time as a string."""
+    return datetime.now().isoformat()
+
+
+def datetime_calculator(
+    start_time: str,
+    delta_minutes: int,
+) -> str:
+    """Calculate a new datetime by adding minutes (including negative values) to a given start time."""
+    start_dt = datetime.fromisoformat(start_time)
+    new_dt = start_dt + timedelta(minutes=delta_minutes)
+    return new_dt.isoformat()
+
+
 class Text2SqlConvertor:
     """Prepare and hold the DSPy LM used for text-to-SQL conversion."""
 
@@ -80,7 +98,9 @@ class Text2SqlConvertor:
         self._station_signature: type[dspy.Signature] = (
             build_station_extraction_signature(stations)
         )
-        self._station_extractor: dspy.Predict = dspy.Predict(self._station_signature)
+        self._station_extractor: dspy.ReAct = dspy.ReAct(
+            self._station_signature, tools=[get_current_datetime, datetime_calculator]
+        )
 
     def convert(self, question: str) -> dspy.Prediction:
         return self._station_extractor(question=question)

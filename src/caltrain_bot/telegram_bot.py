@@ -28,10 +28,10 @@ def build_app():
         use_in_memory_db=False,
     )
     text2sql_convertor = Text2SqlConvertor(settings.llm, schedule_manager.stations)
-    text2sql_convertor.convert("When is the next train from San Francisco to San Jose?")
-    print(
-        text2sql_convertor.convert("Next train from San Francisco to Palo Alto"),
+    stations_prediction = text2sql_convertor.convert(
+        "Trains from SF to Menlo Park departing after in 30 minutes"
     )
+    print(stations_prediction)
 
     app = ApplicationBuilder().token(settings.telegram_bot_token).build()
     app.add_handler(CommandHandler("start", start))
