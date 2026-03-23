@@ -104,32 +104,33 @@ class ScheduleManager:
         departure_time: datetime,
     ) -> list[Train]:
         """Returns a list of trains departing from the specified station and arriving at the specified station."""
-        rows = self.schedule.session.execute(
-            text("""
-                SELECT
-                    train_number,
-                    service_pattern,
-                    origin_station_id,
-                    origin_station_name,
-                    origin_station_query_name,
-                    origin_departure_timestamp,
-                    destination_station_id,
-                    destination_station_name,
-                    destination_station_query_name,
-                    destination_arrival_timestamp,
-                    travel_minutes
-                FROM train_station_journeys
-                WHERE origin_station_query_name = :departure_station_query_name
-                AND destination_station_query_name = :arrival_station_query_name
-                AND origin_departure_timestamp BETWEEN datetime(:departure_time, '-20 minutes') AND datetime(:departure_time, '+30 minutes')
-                ORDER BY origin_departure_timestamp
-            """),
-            {
-                "departure_station_query_name": departure_station_query_name,
-                "arrival_station_query_name": arrival_station_query_name,
-                "departure_time": departure_time.isoformat(),
-            },
-        ).fetchall()
+        query_sql = """
+            SELECT
+                train_number,
+                service_pattern,
+                origin_station_id,
+                origin_station_name,
+                origin_station_query_name,
+                origin_departure_timestamp,
+                destination_station_id,
+                destination_station_name,
+                destination_station_query_name,
+                destination_arrival_timestamp,
+                travel_minutes
+            FROM train_station_journeys
+            WHERE origin_station_query_name = :departure_station_query_name
+            AND destination_station_query_name = :arrival_station_query_name
+            AND origin_departure_timestamp BETWEEN datetime(:departure_time, '-20 minutes') AND datetime(:departure_time, '+30 minutes')
+            ORDER BY origin_departure_timestamp
+        """
+        params = {
+            "departure_station_query_name": departure_station_query_name,
+            "arrival_station_query_name": arrival_station_query_name,
+            "departure_time": departure_time.isoformat(),
+        }
+        logger.info("Executing train query:\n{}\nWith params: {}", query_sql.strip(), params)
+
+        rows = self.schedule.session.execute(text(query_sql), params).fetchall()
 
         return [
             Train(
