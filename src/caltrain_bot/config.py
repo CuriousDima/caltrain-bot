@@ -40,7 +40,6 @@ class Settings:
     gtfs_file_path: Path
     preprocessing_sql_path: Path
     llm: LLMSettings
-    mlflow_tracking_url: str | None
 
 
 def _require_env(name: str) -> str:
@@ -48,15 +47,6 @@ def _require_env(name: str) -> str:
     if value is None or not value.strip():
         raise ValueError(f"{name} environment variable is required.")
     return value.strip()
-
-
-def _optional_env(name: str) -> str | None:
-    value = os.getenv(name)
-    if value is None:
-        return None
-
-    value = value.strip()
-    return value or None
 
 
 def _load_llm_settings() -> LLMSettings:
@@ -106,5 +96,4 @@ def load_settings() -> Settings:
         gtfs_file_path=gtfs_file_path,
         preprocessing_sql_path=preprocessing_sql_path,
         llm=_load_llm_settings(),
-        mlflow_tracking_url=_optional_env("MLFLOW_TRACKING_URL"),
     )

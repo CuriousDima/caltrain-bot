@@ -142,11 +142,7 @@ def build_app():
         preprocess_sql=settings.preprocessing_sql_path,
         use_in_memory_db=(os.getenv("DEBUG") != "1"),
     )
-    analyzer = QuestionAnalyzer(
-        settings.llm,
-        schedule_manager.stations,
-        mlflow_tracking_url=settings.mlflow_tracking_url,
-    )
+    analyzer = QuestionAnalyzer(settings.llm, schedule_manager.stations)
 
     app = ApplicationBuilder().token(settings.telegram_bot_token).build()
     app.add_handler(CommandHandler("start", start))
