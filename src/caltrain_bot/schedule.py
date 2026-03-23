@@ -8,6 +8,8 @@ import sqlparse
 from loguru import logger
 from sqlalchemy import text
 
+from caltrain_bot.time_utils import format_datetime_for_sql
+
 
 @dataclass(frozen=True)
 class Train:
@@ -123,10 +125,11 @@ class ScheduleManager:
             AND origin_departure_timestamp BETWEEN datetime(:departure_time, '-20 minutes') AND datetime(:departure_time, '+30 minutes')
             ORDER BY origin_departure_timestamp
         """
+        normalized_departure_time = format_datetime_for_sql(departure_time)
         params = {
             "departure_station_query_name": departure_station_query_name,
             "arrival_station_query_name": arrival_station_query_name,
-            "departure_time": departure_time.isoformat(),
+            "departure_time": normalized_departure_time,
         }
         logger.info("Executing train query:\n{}\nWith params: {}", query_sql.strip(), params)
 

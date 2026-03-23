@@ -6,6 +6,7 @@ import dspy
 from loguru import logger
 
 from caltrain_bot.config import LLMSettings, OllamaSettings, OpenRouterSettings
+from caltrain_bot.time_utils import get_current_server_datetime, get_server_timezone
 
 
 class QuestionsClassifier(dspy.Signature):
@@ -96,16 +97,18 @@ def _configure_observability(tracking_url: str | None) -> None:
 
 
 def get_current_datetime() -> str:
-    """Get the current date and time as a string."""
-    return datetime.now().isoformat()
+    """Get the current server-local date and time as an ISO 8601 string."""
+    return get_current_server_datetime().isoformat()
 
 
 def datetime_calculator(
     start_time: str,
     delta_minutes: int,
 ) -> str:
-    """Calculate a new datetime by adding minutes (including negative values) to a given start time."""
+    """Calculate a new server-local datetime from a starting timestamp."""
     start_dt = datetime.fromisoformat(start_time)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=get_server_timezone())
     new_dt = start_dt + timedelta(minutes=delta_minutes)
     return new_dt.isoformat()
 
