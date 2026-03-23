@@ -2,7 +2,6 @@
 
 Caltrain Bot is a Python chatbot that answers Caltrain schedule questions from natural language. It currently ships as a Telegram bot, loads Caltrain GTFS data into SQLite, and uses DSPy plus an LLM provider to understand questions such as "When is the next train from Palo Alto to San Francisco around 8am?"
 
-
 ## Project Layout
 
 - `src/caltrain_bot/telegram_bot.py`: Telegram bot handlers and message formatting.
@@ -53,19 +52,78 @@ Start the bot:
 uv run caltrain-bot
 ```
 
-This uses the in-memory schedule database by default.
-
-Run in debug mode with the on-disk `data/schedule.db` cache:
-
-```shell
-DEBUG=1 uv run caltrain-bot
-```
-
 ## Run Tests
 
 ```shell
 uv run pytest
 ```
+
+## Docker
+
+Build and publish the Raspberry Pi image locally:
+
+```shell
+docker buildx build --platform linux/arm64 \
+  -t curiousdima/caltrain-bot:0.1.1 \
+  -t curiousdima/caltrain-bot:latest \
+  --push .
+```
+
+Required environment variables:
+
+- Always: `TELEGRAM_BOT_TOKEN`, `LLM_PROVIDER`
+- OpenRouter mode: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`
+- Ollama mode: `OLLAMA_API_BASE`, `OLLAMA_MODEL`
+
+Example `/opt/caltrain-bot/caltrain-bot.env` for OpenRouter:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=your-openrouter-api-key
+OPENROUTER_MODEL=openai/gpt-4.1-mini
+```
+
+Deploy on a Raspberry Pi:
+
+```shell
+docker run -d \
+  --name caltrain-bot \
+  --restart unless-stopped \
+  --env-file /opt/caltrain-bot/caltrain-bot.env \
+  curiousdima/caltrain-bot:latest
+```
+
+Example `/opt/caltrain-bot/caltrain-bot.env` for Ollama on the same Raspberry Pi host:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+LLM_PROVIDER=ollama
+OLLAMA_API_BASE=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.2
+```
+
+Deploy with host networking when Ollama runs directly on the Raspberry Pi host:
+
+```shell
+docker run -d \
+  --name caltrain-bot \
+  --restart unless-stopped \
+  --network host \
+  --env-file /opt/caltrain-bot/caltrain-bot.env \
+  curiousdima/caltrain-bot:latest
+```
+
+## GitHub Actions
+
+This repository includes a workflow at `.github/workflows/docker-publish.yml`.
+It runs automatically on pushes to `main` and `master`, publishing `latest` plus a `sha-<commit>` tag.
+You can also run it manually with `workflow_dispatch`, which publishes `latest` and `0.1.1`.
+
+Set these GitHub repository secrets before using it:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
 
 ## Contributing
 

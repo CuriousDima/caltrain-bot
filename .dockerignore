@@ -1,0 +1,12 @@
+.git
+.gitattributes
+.github
+.pytest_cache
+.ruff_cache
+.venv
+.vscode
+__pycache__/
+*.py[cod]
+.DS_Store
+data/schedule.db
+tests/
