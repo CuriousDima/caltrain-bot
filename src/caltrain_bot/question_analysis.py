@@ -81,6 +81,20 @@ def _build_lm(settings: LLMSettings) -> dspy.LM:
             raise ValueError(f"Unsupported LLM provider: {settings.provider}")
 
 
+def _configure_observability(tracking_url: str | None) -> None:
+    if tracking_url is None:
+        return
+
+    tracking_url = tracking_url.strip()
+    if not tracking_url:
+        return
+
+    import mlflow
+
+    mlflow.set_tracking_uri(tracking_url)
+    mlflow.dspy.autolog()
+
+
 def get_current_datetime() -> str:
     """Get the current date and time as a string."""
     return datetime.now().isoformat()
@@ -99,10 +113,16 @@ def datetime_calculator(
 class QuestionAnalyzer:
     """Analyzes the user's question and extracts the departure station, arrival station, and departure time."""
 
-    def __init__(self, llm_settings: LLMSettings, stations: Sequence[str]):
+    def __init__(
+        self,
+        llm_settings: LLMSettings,
+        stations: Sequence[str],
+        mlflow_tracking_url: str | None = None,
+    ):
         # Construct the LM object after validating settings.
         _validate_provider(llm_settings)
         self._lm: dspy.LM = _build_lm(llm_settings)
+        _configure_observability(mlflow_tracking_url)
         # Make the LM available globally for all signatures to use when making predictions.
         dspy.configure(lm=self._lm)
 

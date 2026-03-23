@@ -38,6 +38,10 @@ If `LLM_PROVIDER=openrouter`, also set:
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_MODEL`
 
+Optional variables:
+
+- `MLFLOW_TRACKING_URL` to enable DSPy tracing with MLflow. Leave it unset or blank to keep observability disabled.
+
 ## Run Locally
 
 Install dependencies:
