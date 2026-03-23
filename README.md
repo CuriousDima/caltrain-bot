@@ -114,17 +114,6 @@ docker run -d \
   curiousdima/caltrain-bot:latest
 ```
 
-## GitHub Actions
-
-This repository includes a workflow at `.github/workflows/docker-publish.yml`.
-It runs automatically on pushes to `main` and `master`, publishing `latest` plus a `sha-<commit>` tag.
-You can also run it manually with `workflow_dispatch`, which publishes `latest` and `0.1.1`.
-
-Set these GitHub repository secrets before using it:
-
-- `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN`
-
 ## Contributing
 
 Contributions are welcome. The current project focuses on Telegram, but the schedule and question-analysis logic are already separated enough to support additional chat frontends.
