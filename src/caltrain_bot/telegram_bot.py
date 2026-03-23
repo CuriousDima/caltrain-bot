@@ -51,18 +51,64 @@ def format_trains_message(trains: list[Train]) -> str:
     return "\n\n".join(parts)
 
 
+def format_start_message(name: str) -> str:
+    safe_name = escape(name)
+    return "\n".join(
+        (
+            f"Hello {safe_name}! I can help you find Caltrain trips between stations.",
+            "",
+            "Ask in plain English. For example:",
+            "<code>San Francisco to Palo Alto after 7pm</code>",
+            "<code>Next train from Mountain View to San Jose Diridon</code>",
+            "<code>Need a train from Millbrae to 22nd Street around 8:30</code>",
+            "",
+            "Include your departure station, destination, and optionally a time.",
+            "Send <code>/info</code> for more about the bot, the maintainer, and contributing.",
+        )
+    )
+
+
+def format_info_message() -> str:
+    return "\n".join(
+        (
+            "Caltrain Bot helps with scheduled Caltrain trips between stations.",
+            "",
+            "What I can do:",
+            "- Find matching trains between Caltrain stations",
+            "- Understand natural-language questions about routes and times",
+            "- Show departure, arrival, duration, train number, and service pattern",
+            "",
+            "Example questions:",
+            "<code>Belmont to San Francisco tomorrow at 9am</code>",
+            "<code>What is the next train from Sunnyvale to Millbrae?</code>",
+            "<code>Trains from Palo Alto to San Jose Diridon after 6:15pm</code>",
+            "",
+            "Good to know:",
+            "- This bot works from timetable data, not live delay or service alert feeds",
+            "- It does not handle ticketing, fares, or bookings",
+            "",
+            "Maintainer:",
+            "Dima Timofeev",
+            "Contact: <code>1127655+CuriousDima@users.noreply.github.com</code>",
+            "",
+            "Contributing:",
+            "Open a pull request with tests and run <code>uv run pytest</code> before submitting.",
+            "You can run the bot locally with <code>uv run caltrain-bot</code>.",
+        )
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     name = update.effective_user.first_name if update.effective_user else "there"
-    await update.message.reply_text(f"Hello {name}! Welcome to the Caltrain Bot.")
+    await update.message.reply_text(format_start_message(name), parse_mode="HTML")
 
 
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
-    info = "This bot provides information about Caltrain schedules. You can ask about train times, routes, and more!"
-    await update.message.reply_text(info)
+    await update.message.reply_text(format_info_message(), parse_mode="HTML")
 
 
 async def get_trains_info(
