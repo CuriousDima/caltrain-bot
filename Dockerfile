@@ -26,11 +26,15 @@ FROM python:3.11-slim-trixie AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    TZ=America/Los_Angeles \
     PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
-RUN groupadd --system app \
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system app \
     && useradd --system --gid app --create-home --home-dir /home/app app
 
 COPY --from=builder /app/.venv /app/.venv
