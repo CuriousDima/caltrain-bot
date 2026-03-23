@@ -76,7 +76,7 @@ def format_info_message() -> str:
             "What I can do:",
             "- Find matching trains between Caltrain stations",
             "- Understand natural-language questions about routes and times",
-            "- Show departure, arrival, duration, train number, and service pattern",
+            "- Show departure, arrival, duration, train number, and service type",
             "",
             "Example questions:",
             "<code>Belmont to San Francisco tomorrow at 9am</code>",
@@ -87,13 +87,7 @@ def format_info_message() -> str:
             "- This bot works from timetable data, not live delay or service alert feeds",
             "- It does not handle ticketing, fares, or bookings",
             "",
-            "Maintainer:",
-            "Dima Timofeev",
-            "Contact: <code>1127655+CuriousDima@users.noreply.github.com</code>",
-            "",
-            "Contributing:",
-            "Open a pull request with tests and run <code>uv run pytest</code> before submitting.",
-            "You can run the bot locally with <code>uv run caltrain-bot</code>.",
+            "Contributing: https://github.com/CuriousDima/caltrain-bot",
         )
     )
 
