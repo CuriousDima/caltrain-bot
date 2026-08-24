@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -20,14 +21,23 @@ class QuestionsClassifier(dspy.Signature):
 
 
 class ReActWithDatetime(dspy.Module):
-    def __init__(self, signature: str | type[Signature], tools: list[Any], max_iterations: int = 10) -> None:
+    def __init__(
+        self,
+        signature: str | type[Signature],
+        tools: list[Any],
+        max_iterations: int = 10,
+    ) -> None:
         super().__init__()
         base_signature = ensure_signature(signature)
         self.signature = base_signature.append(
             "current_datetime",
-            dspy.InputField(desc="Current date and time in the America/Los_Angeles timezone formatted as ISO 8601."),
+            dspy.InputField(
+                desc="Current date and time in the America/Los_Angeles timezone formatted as ISO 8601."
+            ),
         )
-        self.react = dspy.ReAct(signature=self.signature, tools=tools, max_iters=max_iterations)
+        self.react = dspy.ReAct(
+            signature=self.signature, tools=tools, max_iters=max_iterations
+        )
 
     def forward(self, **input_args: Any) -> dspy.Prediction:
         input_args["current_datetime"] = datetime.now(
@@ -87,36 +97,72 @@ def datetime_calculator(
     return new_dt.isoformat()
 
 
-class QuestionAnalyzer:
-    """Analyzes the user's question and extracts the departure station, arrival station, and departure time."""
+@dataclass(frozen=True)
+class UnsupportedQuestion:
+    pass
 
-    def __init__(self, llm_settings: OpenRouterSettings, stations: Sequence[str]):
-        # Construct the LM object after validating settings.
-        if not llm_settings.api_key.strip():
-            raise ValueError("OPENROUTER_API_KEY environment variable is required.")
-        self._lm: dspy.LM = dspy.LM(
-            f"openrouter/{llm_settings.model}",
-            api_key=llm_settings.api_key,
-        )
-        # Make the LM available globally for all signatures to use when making predictions.
-        dspy.configure(lm=self._lm)
 
-        self._question_classifier: dspy.Predict = dspy.Predict(QuestionsClassifier)
-        self._stations_departure_time_extractor = ReActWithDatetime(
-            build_station_extraction_signature(stations),
-            tools=[datetime_calculator],
-        )
+@dataclass(frozen=True)
+class ScheduleQuestion:
+    departure_station: str
+    arrival_station: str
+    departure_time: datetime
 
-    def is_schedule_question(self, question: str) -> bool:
+
+QuestionAnalysisResult = UnsupportedQuestion | ScheduleQuestion
+
+
+class CaltrainScheduleHelper(dspy.Module):
+    """Classify a question and extract a schedule lookup when applicable."""
+
+    def __init__(
+        self,
+        question_classifier: dspy.Module,
+        stations_departure_time_extractor: dspy.Module,
+    ) -> None:
+        super().__init__()
+        self._question_classifier = question_classifier
+        self._stations_departure_time_extractor = stations_departure_time_extractor
+
+    def forward(self, question: str) -> QuestionAnalysisResult:
         logger.info(f"Classifying question:\n{question}")
-        prediction = self._question_classifier(question=question)
-        logger.info(f"Classification verdict: {prediction}")
-        return prediction.is_schedule_question
+        classification = self._question_classifier(question=question)
+        logger.info(f"Classification verdict: {classification}")
 
-    def extract_stations_and_departure_time(self, question: str) -> dspy.Prediction:
+        if not classification.is_schedule_question:
+            logger.warning(
+                f"Question is not a schedule question. Original question: {question}"
+            )
+            return UnsupportedQuestion()
+
         logger.info(
             f"Extracting stations and departure time from question:\n{question}"
         )
-        r = self._stations_departure_time_extractor(question=question)
-        logger.info(f"Extraction result: {r}")
-        return r
+        extraction = self._stations_departure_time_extractor(question=question)
+        logger.info(f"Extraction result: {extraction}")
+        return ScheduleQuestion(
+            departure_station=extraction.departure_station,
+            arrival_station=extraction.arrival_station,
+            departure_time=extraction.departure_time,
+        )
+
+
+def build_caltrain_schedule_helper(
+    llm_settings: OpenRouterSettings, stations: Sequence[str]
+) -> CaltrainScheduleHelper:
+    if not llm_settings.api_key.strip():
+        raise ValueError("OPENROUTER_API_KEY environment variable is required.")
+
+    lm = dspy.LM(
+        f"openrouter/{llm_settings.model}",
+        api_key=llm_settings.api_key,
+    )
+    dspy.configure(lm=lm)
+
+    return CaltrainScheduleHelper(
+        question_classifier=dspy.Predict(QuestionsClassifier),
+        stations_departure_time_extractor=ReActWithDatetime(
+            build_station_extraction_signature(stations),
+            tools=[datetime_calculator],
+        ),
+    )

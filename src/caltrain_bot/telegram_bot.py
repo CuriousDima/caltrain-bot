@@ -14,7 +14,11 @@ from telegram.ext import (
 )
 
 from caltrain_bot.config import load_settings
-from caltrain_bot.question_analysis import QuestionAnalyzer
+from caltrain_bot.question_analysis import (
+    CaltrainScheduleHelper,
+    UnsupportedQuestion,
+    build_caltrain_schedule_helper,
+)
 from caltrain_bot.schedule import ScheduleManager, Train
 
 _ = load_dotenv()
@@ -109,7 +113,7 @@ async def get_trains_info(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     schedule_manager: ScheduleManager,
-    analyzer: QuestionAnalyzer,
+    schedule_helper: CaltrainScheduleHelper,
 ) -> None:
     if not update.message:
         return
@@ -120,16 +124,16 @@ async def get_trains_info(
         "I am checking your question and looking up the train information now. Please give me a minute!"
     )
     question = update.message.text
-    if not analyzer.is_schedule_question(question):
+    schedule_helper_result = schedule_helper(question=question)
+    if isinstance(schedule_helper_result, UnsupportedQuestion):
         _ = await update.message.reply_text(
             "I can only help with Caltrain train schedules, routes, and stations."
         )
         return
-    prediction = analyzer.extract_stations_and_departure_time(question)
     trains = schedule_manager.get_trains(
-        departure_station_query_name=prediction.departure_station,
-        arrival_station_query_name=prediction.arrival_station,
-        departure_time=prediction.departure_time,
+        departure_station_query_name=schedule_helper_result.departure_station,
+        arrival_station_query_name=schedule_helper_result.arrival_station,
+        departure_time=schedule_helper_result.departure_time,
     )
     trains_message = format_trains_message(trains)
     _ = await update.message.reply_text(trains_message, parse_mode="HTML")
@@ -142,7 +146,9 @@ def build_app():
         preprocess_sql=settings.preprocessing_sql_path,
         use_in_memory_db=(os.getenv("DEBUG") != "1"),
     )
-    analyzer = QuestionAnalyzer(settings.llm, schedule_manager.stations)
+    caltrain_schedule_helper = build_caltrain_schedule_helper(
+        settings.llm, schedule_manager.stations
+    )
 
     app = ApplicationBuilder().token(settings.telegram_bot_token).build()
     app.add_handler(CommandHandler("start", start))
@@ -151,7 +157,9 @@ def build_app():
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             functools.partial(
-                get_trains_info, schedule_manager=schedule_manager, analyzer=analyzer
+                get_trains_info,
+                schedule_manager=schedule_manager,
+                schedule_helper=caltrain_schedule_helper,
             ),
         )
     )
