@@ -1,4 +1,6 @@
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -51,3 +53,30 @@ def test_get_stations(schedule_manager):
         "sunnyvale",
         "tamien",
     )
+
+
+def test_get_trains_normalizes_aware_datetimes_to_caltrain_wall_time(
+    schedule_manager,
+):
+    departure_times = (
+        datetime(2026, 8, 24, 18),
+        datetime(2026, 8, 24, 18, tzinfo=ZoneInfo("America/Los_Angeles")),
+        datetime(2026, 8, 25, 1, tzinfo=ZoneInfo("UTC")),
+    )
+    expected_departures = (
+        "2026-08-24 17:43:00",
+        "2026-08-24 17:55:00",
+        "2026-08-24 18:10:00",
+        "2026-08-24 18:25:00",
+    )
+
+    for departure_time in departure_times:
+        trains = schedule_manager.get_trains(
+            departure_station_query_name="palo alto",
+            arrival_station_query_name="san francisco",
+            departure_time=departure_time,
+        )
+
+        assert tuple(str(train.origin_departure_timestamp) for train in trains) == (
+            expected_departures
+        )

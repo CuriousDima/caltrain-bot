@@ -2,11 +2,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pygtfs
 import sqlparse
 from loguru import logger
 from sqlalchemy import text
+
+
+_CALTRAIN_TIMEZONE = ZoneInfo("America/Los_Angeles")
 
 
 @dataclass(frozen=True)
@@ -104,6 +108,10 @@ class ScheduleManager:
         departure_time: datetime,
     ) -> list[Train]:
         """Returns a list of trains departing from the specified station and arriving at the specified station."""
+        if departure_time.tzinfo is not None:
+            departure_time = departure_time.astimezone(_CALTRAIN_TIMEZONE)
+        gtfs_departure_time = departure_time.replace(tzinfo=None)
+
         query_sql = """
             SELECT
                 train_number,
@@ -126,9 +134,11 @@ class ScheduleManager:
         params = {
             "departure_station_query_name": departure_station_query_name,
             "arrival_station_query_name": arrival_station_query_name,
-            "departure_time": departure_time.isoformat(),
+            "departure_time": gtfs_departure_time.isoformat(sep=" "),
         }
-        logger.info("Executing train query:\n{}\nWith params: {}", query_sql.strip(), params)
+        logger.info(
+            "Executing train query:\n{}\nWith params: {}", query_sql.strip(), params
+        )
 
         rows = self.schedule.session.execute(text(query_sql), params).fetchall()
 

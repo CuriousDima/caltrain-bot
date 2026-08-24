@@ -17,12 +17,10 @@ These instructions apply to the whole repository.
 - Format Python: `uv run ruff format .`
 - Type-check: `uv run ty check src`
 
-Running the bot requires environment variables from the shell or `.env`:
+Running the bot requires `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`, and
+`OPENROUTER_MODEL` from the shell or `.env`.
 
-- Always: `TELEGRAM_BOT_TOKEN`, `LLM_PROVIDER`
-- Ollama mode: `OLLAMA_API_BASE`, `OLLAMA_MODEL`
-- OpenRouter mode: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`
-- Optional: `MLFLOW_TRACKING_URL`
+`MLFLOW_TRACKING_URL` is optional.
 
 ## Code Map
 

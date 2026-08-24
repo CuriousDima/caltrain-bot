@@ -13,7 +13,7 @@ Read the build story:
 
 - Answers Caltrain schedule questions from natural language.
 - Uses bundled Caltrain GTFS data, so schedule lookups come from a static transit feed rather than live scraping.
-- Supports both local LLMs through Ollama and hosted models through OpenRouter.
+- Uses hosted language models through OpenRouter.
 - Runs as a Telegram bot today, with the schedule and question-analysis logic separated enough to support other chat frontends later.
 
 Example questions:
@@ -29,7 +29,7 @@ Example questions:
 - Python 3.11+
 - [`uv`](https://docs.astral.sh/uv/)
 - A Telegram bot token
-- One supported LLM provider: Ollama or OpenRouter
+- An OpenRouter API key
 
 ### Install dependencies
 
@@ -44,34 +44,15 @@ The bot reads configuration from your shell and from a `.env` file if present.
 Required variables:
 
 - `TELEGRAM_BOT_TOKEN`
-- `LLM_PROVIDER` set to `ollama` or `openrouter`
-
-If `LLM_PROVIDER=ollama`, also set:
-
-- `OLLAMA_API_BASE`
-- `OLLAMA_MODEL`
-
-If `LLM_PROVIDER=openrouter`, also set:
-
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_MODEL`
 
-Example `.env` for OpenRouter:
+Example `.env`:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
-LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your-openrouter-api-key
 OPENROUTER_MODEL=openai/gpt-4.1-mini
-```
-
-Example `.env` for Ollama:
-
-```dotenv
-TELEGRAM_BOT_TOKEN=your-telegram-bot-token
-LLM_PROVIDER=ollama
-OLLAMA_API_BASE=http://127.0.0.1:11434
-OLLAMA_MODEL=llama3.2
 ```
 
 ### Run the bot
@@ -119,15 +100,14 @@ docker buildx build --platform linux/arm64 \
 
 Required environment variables:
 
-- Always: `TELEGRAM_BOT_TOKEN`, `LLM_PROVIDER`
-- OpenRouter mode: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`
-- Ollama mode: `OLLAMA_API_BASE`, `OLLAMA_MODEL`
+- `TELEGRAM_BOT_TOKEN`
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_MODEL`
 
-Example `/opt/caltrain-bot/caltrain-bot.env` for OpenRouter:
+Example `/opt/caltrain-bot/caltrain-bot.env`:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
-LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your-openrouter-api-key
 OPENROUTER_MODEL=openai/gpt-4.1-mini
 ```
@@ -138,26 +118,6 @@ Deploy on a Raspberry Pi:
 docker run -d \
   --name caltrain-bot \
   --restart unless-stopped \
-  --env-file /opt/caltrain-bot/caltrain-bot.env \
-  curiousdima/caltrain-bot:latest
-```
-
-Example `/opt/caltrain-bot/caltrain-bot.env` for Ollama on the same Raspberry Pi host:
-
-```dotenv
-TELEGRAM_BOT_TOKEN=your-telegram-bot-token
-LLM_PROVIDER=ollama
-OLLAMA_API_BASE=http://127.0.0.1:11434
-OLLAMA_MODEL=llama3.2
-```
-
-Deploy with host networking when Ollama runs directly on the Raspberry Pi host:
-
-```shell
-docker run -d \
-  --name caltrain-bot \
-  --restart unless-stopped \
-  --network host \
   --env-file /opt/caltrain-bot/caltrain-bot.env \
   curiousdima/caltrain-bot:latest
 ```

@@ -1,35 +1,14 @@
 import os
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
-
-
-class Provider(Enum):
-    """Enum for supported language model providers."""
-
-    OLLAMA = "ollama"
-    OPENROUTER = "openrouter"
-
-
-@dataclass(frozen=True)
-class OllamaSettings:
-    """Settings for the Ollama provider."""
-
-    provider: Provider
-    api_base: str
-    model: str
 
 
 @dataclass(frozen=True)
 class OpenRouterSettings:
     """Settings for the OpenRouter provider."""
 
-    provider: Provider
     api_key: str
     model: str
-
-
-LLMSettings = OllamaSettings | OpenRouterSettings
 
 
 @dataclass(frozen=True)
@@ -39,7 +18,7 @@ class Settings:
     telegram_bot_token: str
     gtfs_file_path: Path
     preprocessing_sql_path: Path
-    llm: LLMSettings
+    llm: OpenRouterSettings
 
 
 def _require_env(name: str) -> str:
@@ -49,25 +28,8 @@ def _require_env(name: str) -> str:
     return value.strip()
 
 
-def _load_llm_settings() -> LLMSettings:
-    provider_raw = _require_env("LLM_PROVIDER").lower()
-    try:
-        provider = Provider(provider_raw)
-    except ValueError as exc:
-        supported = ", ".join(provider.value for provider in Provider)
-        raise ValueError(
-            f"LLM_PROVIDER must be one of: {supported}. Got: {provider_raw}"
-        ) from exc
-
-    if provider is Provider.OLLAMA:
-        return OllamaSettings(
-            provider=provider,
-            api_base=_require_env("OLLAMA_API_BASE"),
-            model=_require_env("OLLAMA_MODEL"),
-        )
-
+def _load_llm_settings() -> OpenRouterSettings:
     return OpenRouterSettings(
-        provider=provider,
         api_key=_require_env("OPENROUTER_API_KEY"),
         model=_require_env("OPENROUTER_MODEL"),
     )

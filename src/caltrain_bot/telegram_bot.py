@@ -17,7 +17,7 @@ from caltrain_bot.config import load_settings
 from caltrain_bot.question_analysis import QuestionAnalyzer
 from caltrain_bot.schedule import ScheduleManager, Train
 
-load_dotenv()
+_ = load_dotenv()
 
 
 def _format_timestamp(value: datetime | str) -> str:
@@ -96,13 +96,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     name = update.effective_user.first_name if update.effective_user else "there"
-    await update.message.reply_text(format_start_message(name), parse_mode="HTML")
+    _ = await update.message.reply_text(format_start_message(name), parse_mode="HTML")
 
 
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
-    await update.message.reply_text(format_info_message(), parse_mode="HTML")
+    _ = await update.message.reply_text(format_info_message(), parse_mode="HTML")
 
 
 async def get_trains_info(
@@ -114,14 +114,14 @@ async def get_trains_info(
     if not update.message:
         return
     if not update.message.text:
-        await update.message.reply_text("Sorry, I can only process text messages.")
+        _ = await update.message.reply_text("Sorry, I can only process text messages.")
         return
-    await update.message.reply_text(
+    _ = await update.message.reply_text(
         "I am checking your question and looking up the train information now. Please give me a minute!"
     )
     question = update.message.text
     if not analyzer.is_schedule_question(question):
-        await update.message.reply_text(
+        _ = await update.message.reply_text(
             "I can only help with Caltrain train schedules, routes, and stations."
         )
         return
@@ -132,7 +132,7 @@ async def get_trains_info(
         departure_time=prediction.departure_time,
     )
     trains_message = format_trains_message(trains)
-    await update.message.reply_text(trains_message, parse_mode="HTML")
+    _ = await update.message.reply_text(trains_message, parse_mode="HTML")
 
 
 def build_app():
