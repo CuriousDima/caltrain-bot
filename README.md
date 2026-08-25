@@ -87,6 +87,14 @@ Run type checks:
 uv run ty check src
 ```
 
+### Re-optimize the DSPy program
+
+The question-analysis program was optimized with DSPy's GEPA workflow in
+`evals/Evals & Optimizer.ipynb`. To reproduce or update the optimization, open
+the notebook with `uv run jupyter lab` and rerun all cells; it saves the refreshed
+program to `data/prog_caltrain_schedule_helper_gepa_medium`, which the bot loads
+at startup.
+
 ## Docker And Raspberry Pi
 
 Build and publish the ARM64 image:
