@@ -2,6 +2,7 @@ import functools
 import os
 from datetime import datetime
 from html import escape
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -124,7 +125,10 @@ async def get_trains_info(
         "I am checking your question and looking up the train information now. Please give me a minute!"
     )
     question = update.message.text
-    schedule_helper_result = schedule_helper(question=question)
+    schedule_helper_result = schedule_helper(
+        question=question,
+        reference_datetime=datetime.now(ZoneInfo("America/Los_Angeles")).isoformat(),
+    )
     if isinstance(schedule_helper_result, UnsupportedQuestion):
         _ = await update.message.reply_text(
             "I can only help with Caltrain train schedules, routes, and stations."

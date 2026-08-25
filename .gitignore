@@ -12,5 +12,12 @@ wheels/
 # Environment variables
 .env
 
+# MacOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+
 # Debug data
 data/schedule.db

@@ -26,10 +26,12 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "jupyterlab>=4.6.3",
+    "pandas>=3.0.5",
     "pytest>=9.0.2",
     "ruff>=0.15.6",
     "ty>=0.0.23",
 ]
 
 [tool.uv.sources]
-pygtfs = { git = "https://github.com/CuriousDima/pygtfs", branch = "master" }
+pygtfs = { git = "https://github.com/jarondl/pygtfs", branch = "master" }

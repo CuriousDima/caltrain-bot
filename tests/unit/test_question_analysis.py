@@ -14,9 +14,13 @@ class StubModule(dspy.Module):
         super().__init__()
         self.prediction = prediction
         self.questions: list[str] = []
+        self.reference_datetimes: list[str | None] = []
 
-    def forward(self, question: str) -> dspy.Prediction:
+    def forward(
+        self, question: str, reference_datetime: str | None = None
+    ) -> dspy.Prediction:
         self.questions.append(question)
+        self.reference_datetimes.append(reference_datetime)
         return self.prediction
 
 
@@ -25,11 +29,16 @@ def test_helper_does_not_extract_an_unsupported_question():
     extractor = StubModule(dspy.Prediction())
     helper = CaltrainScheduleHelper(classifier, extractor)
 
-    result = helper(question="How much is a ticket?")
+    result = helper(
+        question="How much is a ticket?",
+        reference_datetime="2026-08-24T15:00:00-07:00",
+    )
 
     assert result == UnsupportedQuestion()
     assert classifier.questions == ["How much is a ticket?"]
+    assert classifier.reference_datetimes == [None]
     assert extractor.questions == []
+    assert extractor.reference_datetimes == []
 
 
 def test_helper_extracts_a_schedule_question():
@@ -44,7 +53,11 @@ def test_helper_extracts_a_schedule_question():
     )
     helper = CaltrainScheduleHelper(classifier, extractor)
 
-    result = helper(question="San Francisco to Palo Alto after 7pm")
+    reference_datetime = "2026-08-24T15:00:00-07:00"
+    result = helper(
+        question="San Francisco to Palo Alto after 7pm",
+        reference_datetime=reference_datetime,
+    )
 
     assert result == ScheduleQuestion(
         departure_station="San Francisco",
@@ -52,4 +65,6 @@ def test_helper_extracts_a_schedule_question():
         departure_time=departure_time,
     )
     assert classifier.questions == ["San Francisco to Palo Alto after 7pm"]
+    assert classifier.reference_datetimes == [None]
     assert extractor.questions == ["San Francisco to Palo Alto after 7pm"]
+    assert extractor.reference_datetimes == [reference_datetime]

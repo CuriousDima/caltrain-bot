@@ -2,7 +2,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
-from zoneinfo import ZoneInfo
 
 import dspy
 from dspy.signatures.signature import Signature, ensure_signature
@@ -30,26 +29,25 @@ class ReActWithDatetime(dspy.Module):
         super().__init__()
         base_signature = ensure_signature(signature)
         self.signature = base_signature.append(
-            "current_datetime",
+            "reference_datetime",
             dspy.InputField(
                 desc="Current date and time in the America/Los_Angeles timezone formatted as ISO 8601."
             ),
+            type_=str,
         )
         self.react = dspy.ReAct(
             signature=self.signature, tools=tools, max_iters=max_iterations
         )
 
-    def forward(self, **input_args: Any) -> dspy.Prediction:
-        input_args["current_datetime"] = datetime.now(
-            ZoneInfo("America/Los_Angeles")
-        ).isoformat()
-        return self.react(**input_args)
+    def forward(self, reference_datetime: str, **input_args: Any) -> dspy.Prediction:
+        return self.react(reference_datetime=reference_datetime, **input_args)
 
-    async def aforward(self, **input_args: Any) -> dspy.Prediction:
-        input_args["current_datetime"] = datetime.now(
-            ZoneInfo("America/Los_Angeles")
-        ).isoformat()
-        return await self.react.aforward(**input_args)
+    async def aforward(
+        self, reference_datetime: str, **input_args: Any
+    ) -> dspy.Prediction:
+        return await self.react.aforward(
+            reference_datetime=reference_datetime, **input_args
+        )
 
 
 # also a signature, but it needs to be built dynamically after we load station names from the database
@@ -124,7 +122,7 @@ class CaltrainScheduleHelper(dspy.Module):
         self._question_classifier = question_classifier
         self._stations_departure_time_extractor = stations_departure_time_extractor
 
-    def forward(self, question: str) -> QuestionAnalysisResult:
+    def forward(self, question: str, reference_datetime: str) -> QuestionAnalysisResult:
         logger.info(f"Classifying question:\n{question}")
         classification = self._question_classifier(question=question)
         logger.info(f"Classification verdict: {classification}")
@@ -138,7 +136,9 @@ class CaltrainScheduleHelper(dspy.Module):
         logger.info(
             f"Extracting stations and departure time from question:\n{question}"
         )
-        extraction = self._stations_departure_time_extractor(question=question)
+        extraction = self._stations_departure_time_extractor(
+            question=question, reference_datetime=reference_datetime
+        )
         logger.info(f"Extraction result: {extraction}")
         return ScheduleQuestion(
             departure_station=extraction.departure_station,
