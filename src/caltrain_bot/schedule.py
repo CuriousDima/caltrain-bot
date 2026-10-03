@@ -62,10 +62,10 @@ def get_feed_end_date(gtfs_file: Path) -> date:
     return max(service_dates)
 
 
-def check_feed_expiry(gtfs_file: Path, today: date | None = None) -> int:
+def check_feed_expiry(gtfs_file: Path, today: date | None = None) -> date:
     """Logs a warning when the GTFS feed is about to expire or has expired.
 
-    Returns the number of days left until the feed end date (negative once expired).
+    Returns the feed end date.
     """
     if today is None:
         today = datetime.now(_CALTRAIN_TIMEZONE).date()
@@ -84,7 +84,17 @@ def check_feed_expiry(gtfs_file: Path, today: date | None = None) -> int:
             end_date.isoformat(),
             days_left,
         )
-    return days_left
+    return end_date
+
+
+def is_after_feed_end(departure_time: datetime, feed_end_date: date) -> bool:
+    """Returns ``True`` when ``departure_time`` falls after the last feed date.
+
+    Naive datetimes are treated as Caltrain wall time, like ``get_trains()``.
+    """
+    if departure_time.tzinfo is not None:
+        departure_time = departure_time.astimezone(_CALTRAIN_TIMEZONE)
+    return departure_time.date() > feed_end_date
 
 
 def preprocess_schedule(schedule: pygtfs.Schedule, preprocess_sql: Path) -> None:
