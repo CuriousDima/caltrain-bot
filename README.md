@@ -97,11 +97,14 @@ at startup.
 
 ## Docker And Raspberry Pi
 
-Build and publish the ARM64 image:
+CI (`.github/workflows/docker-publish.yml`) builds the ARM64 image after tests
+pass on every push to `main` and publishes it to Docker Hub as
+`curiousdima/caltrain-bot:latest` plus a `sha-<short-commit>` tag.
+
+To build and publish it by hand instead:
 
 ```shell
 docker buildx build --platform linux/arm64 \
-  -t curiousdima/caltrain-bot:0.1.1 \
   -t curiousdima/caltrain-bot:latest \
   --push .
 ```
