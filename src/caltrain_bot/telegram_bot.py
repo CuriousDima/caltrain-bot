@@ -61,13 +61,6 @@ def format_trains_message(trains: list[Train]) -> str:
     return "\n\n".join(parts)
 
 
-def format_feed_expired_message() -> str:
-    return (
-        "We sincerely apologize! Our schedule data does not cover that date yet. "
-        "We will update the schedule soon, so please check back later."
-    )
-
-
 def format_start_message(name: str) -> str:
     safe_name = escape(name)
     return "\n".join(
@@ -148,7 +141,10 @@ async def get_trains_info(
         )
         return
     if is_after_feed_end(schedule_helper_result.departure_time, feed_end_date):
-        _ = await update.message.reply_text(format_feed_expired_message())
+        _ = await update.message.reply_text(
+            "We sincerely apologize! Our schedule data does not cover that date yet. "
+            "We will update the schedule soon, so please check back later."
+        )
         return
     trains = schedule_manager.get_trains(
         departure_station_query_name=schedule_helper_result.departure_station,

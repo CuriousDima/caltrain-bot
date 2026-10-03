@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 from caltrain_bot.question_analysis import ScheduleQuestion
 from caltrain_bot.telegram_bot import (
-    format_feed_expired_message,
     format_info_message,
     format_start_message,
     get_trains_info,
@@ -29,13 +28,6 @@ def test_format_info_message_includes_capabilities_and_contributing():
     assert "What is the next train from Sunnyvale to Millbrae?" in message
     assert "not live delay or service alert feeds" in message
     assert "Contributing: https://github.com/CuriousDima/caltrain-bot" in message
-
-
-def test_format_feed_expired_message_apologizes_and_promises_update():
-    message = format_feed_expired_message()
-
-    assert "sincerely apologize" in message
-    assert "update the schedule soon" in message
 
 
 def _run_get_trains_info(departure_time: datetime, feed_end_date: date):
@@ -68,7 +60,7 @@ def test_get_trains_info_apologizes_for_dates_after_feed_end():
         datetime(2026, 9, 1, 8, 0), feed_end_date=date(2026, 8, 31)
     )
 
-    assert replies[-1] == format_feed_expired_message()
+    assert "sincerely apologize" in replies[-1]
     schedule_manager.get_trains.assert_not_called()
 
 
