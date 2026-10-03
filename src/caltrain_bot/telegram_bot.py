@@ -1,6 +1,6 @@
 import functools
 import os
-from datetime import datetime
+from datetime import date, datetime
 from html import escape
 from zoneinfo import ZoneInfo
 
@@ -20,7 +20,12 @@ from caltrain_bot.question_analysis import (
     UnsupportedQuestion,
     build_caltrain_schedule_helper,
 )
-from caltrain_bot.schedule import ScheduleManager, Train
+from caltrain_bot.schedule import (
+    ScheduleManager,
+    Train,
+    check_feed_expiry,
+    is_after_feed_end,
+)
 
 _ = load_dotenv()
 
@@ -115,6 +120,7 @@ async def get_trains_info(
     context: ContextTypes.DEFAULT_TYPE,
     schedule_manager: ScheduleManager,
     schedule_helper: CaltrainScheduleHelper,
+    feed_end_date: date,
 ) -> None:
     if not update.message:
         return
@@ -134,6 +140,12 @@ async def get_trains_info(
             "I can only help with Caltrain train schedules, routes, and stations."
         )
         return
+    if is_after_feed_end(schedule_helper_result.departure_time, feed_end_date):
+        _ = await update.message.reply_text(
+            "We sincerely apologize! Our schedule data does not cover that date yet. "
+            "We will update the schedule soon, so please check back later."
+        )
+        return
     trains = schedule_manager.get_trains(
         departure_station_query_name=schedule_helper_result.departure_station,
         arrival_station_query_name=schedule_helper_result.arrival_station,
@@ -145,6 +157,7 @@ async def get_trains_info(
 
 def build_app():
     settings = load_settings()
+    feed_end_date = check_feed_expiry(settings.gtfs_file_path)
     schedule_manager = ScheduleManager(
         schedules_file=settings.gtfs_file_path,
         preprocess_sql=settings.preprocessing_sql_path,
@@ -164,6 +177,7 @@ def build_app():
                 get_trains_info,
                 schedule_manager=schedule_manager,
                 schedule_helper=caltrain_schedule_helper,
+                feed_end_date=feed_end_date,
             ),
         )
     )

@@ -1,5 +1,8 @@
+import csv
+import io
+import zipfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from functools import cached_property
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -11,6 +14,7 @@ from sqlalchemy import text
 
 
 _CALTRAIN_TIMEZONE = ZoneInfo("America/Los_Angeles")
+FEED_EXPIRY_WARNING_DAYS = 14
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,71 @@ class Train:
     destination_station_query_name: str
     destination_arrival_timestamp: datetime
     travel_minutes: int
+
+
+def _read_gtfs_dates(archive: zipfile.ZipFile, member: str, column: str) -> list[date]:
+    if member not in archive.namelist():
+        return []
+    with archive.open(member) as f:
+        rows = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+        return [
+            datetime.strptime(row[column].strip(), "%Y%m%d").date()
+            for row in rows
+            if (row.get(column) or "").strip()
+        ]
+
+
+def get_feed_end_date(gtfs_file: Path) -> date:
+    """Returns the last date the GTFS feed covers.
+
+    Uses ``feed_end_date`` from ``feed_info.txt`` when present, otherwise the
+    latest ``end_date`` in ``calendar.txt`` or ``date`` in ``calendar_dates.txt``.
+    """
+    with zipfile.ZipFile(gtfs_file) as archive:
+        feed_end_dates = _read_gtfs_dates(archive, "feed_info.txt", "feed_end_date")
+        if feed_end_dates:
+            return max(feed_end_dates)
+        service_dates = _read_gtfs_dates(
+            archive, "calendar.txt", "end_date"
+        ) + _read_gtfs_dates(archive, "calendar_dates.txt", "date")
+    if not service_dates:
+        raise ValueError(f"Could not determine the end date of GTFS feed: {gtfs_file}")
+    return max(service_dates)
+
+
+def check_feed_expiry(gtfs_file: Path, today: date | None = None) -> date:
+    """Logs a warning when the GTFS feed is about to expire or has expired.
+
+    Returns the feed end date.
+    """
+    if today is None:
+        today = datetime.now(_CALTRAIN_TIMEZONE).date()
+    end_date = get_feed_end_date(gtfs_file)
+    days_left = (end_date - today).days
+    if days_left < 0:
+        logger.error(
+            "GTFS feed {} expired on {}; train times may be wrong. Update the feed.",
+            gtfs_file.name,
+            end_date.isoformat(),
+        )
+    elif days_left <= FEED_EXPIRY_WARNING_DAYS:
+        logger.warning(
+            "GTFS feed {} expires on {} ({} days left). Update the feed soon.",
+            gtfs_file.name,
+            end_date.isoformat(),
+            days_left,
+        )
+    return end_date
+
+
+def is_after_feed_end(departure_time: datetime, feed_end_date: date) -> bool:
+    """Returns ``True`` when ``departure_time`` falls after the last feed date.
+
+    Naive datetimes are treated as Caltrain wall time, like ``get_trains()``.
+    """
+    if departure_time.tzinfo is not None:
+        departure_time = departure_time.astimezone(_CALTRAIN_TIMEZONE)
+    return departure_time.date() > feed_end_date
 
 
 def preprocess_schedule(schedule: pygtfs.Schedule, preprocess_sql: Path) -> None:
