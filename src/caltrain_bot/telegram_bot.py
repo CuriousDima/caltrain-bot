@@ -20,7 +20,7 @@ from caltrain_bot.question_analysis import (
     UnsupportedQuestion,
     build_caltrain_schedule_helper,
 )
-from caltrain_bot.schedule import ScheduleManager, Train
+from caltrain_bot.schedule import ScheduleManager, Train, check_feed_expiry
 
 _ = load_dotenv()
 
@@ -145,6 +145,7 @@ async def get_trains_info(
 
 def build_app():
     settings = load_settings()
+    check_feed_expiry(settings.gtfs_file_path)
     schedule_manager = ScheduleManager(
         schedules_file=settings.gtfs_file_path,
         preprocess_sql=settings.preprocessing_sql_path,
