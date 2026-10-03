@@ -20,8 +20,6 @@ These instructions apply to the whole repository.
 Running the bot requires `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`, and
 `OPENROUTER_MODEL` from the shell or `.env`.
 
-`MLFLOW_TRACKING_URL` is optional.
-
 ## Code Map
 
 - `src/caltrain_bot/__init__.py`: CLI entrypoint that builds and runs the Telegram app.
