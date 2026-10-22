@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import os
 from datetime import date, datetime
@@ -131,7 +132,9 @@ async def get_trains_info(
         "I am checking your question and looking up the train information now. Please give me a minute!"
     )
     question = update.message.text
-    schedule_helper_result = schedule_helper(
+    # Run the slow LLM calls off the event loop so other chats are not blocked.
+    schedule_helper_result = await asyncio.to_thread(
+        schedule_helper,
         question=question,
         reference_datetime=datetime.now(ZoneInfo("America/Los_Angeles")).isoformat(),
     )
