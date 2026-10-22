@@ -214,6 +214,9 @@ def build_caltrain_schedule_helper(
     lm = dspy.LM(
         f"openrouter/{llm_settings.model}",
         api_key=llm_settings.api_key,
+        # Route to the fastest OpenRouter provider and keep hidden reasoning short;
+        # the ReAct signatures already reason explicitly in their output fields.
+        extra_body={"provider": {"sort": "throughput"}, "reasoning": {"effort": "low"}},
     )
     dspy.configure(lm=lm)
 
@@ -225,6 +228,9 @@ def build_caltrain_schedule_helper(
             "Optimized program must deserialize to CaltrainScheduleHelper, "
             f"got {type(program).__name__}."
         )
+
+    # The optimized prompt needs at most one tool call, so cap runaway loops.
+    setattr(program._stations_departure_time_extractor, "max_iters", 3)
 
     expected_stations = {program._normalize_station(station) for station in stations}
     optimized_stations = set(program._stations_by_normalized_name)
