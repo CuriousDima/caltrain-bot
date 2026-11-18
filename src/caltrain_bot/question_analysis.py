@@ -2,6 +2,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, Literal, Optional
+from zoneinfo import ZoneInfo
 
 import dspy
 from loguru import logger
@@ -9,10 +11,19 @@ from loguru import logger
 from caltrain_bot.config import OpenRouterSettings
 
 OPTIMIZED_PROGRAM_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "data"
-    / "prog_caltrain_schedule_helper_gepa_medium"
+    Path(__file__).resolve().parents[2] / "data" / "schedule_question_program.json"
 )
+
+CALTRAIN_TIMEZONE = ZoneInfo("America/Los_Angeles")
+
+# One short structured answer per question: fail fast and retry rather than
+# leave the user waiting on a stuck request.
+LLM_TIMEOUT_SECONDS = 20
+LLM_NUM_RETRIES = 2
+LLM_MAX_TOKENS = 1000
+
+_UPCOMING_DAYS = 14
+_MISSING_TIME_VALUES = {"", "none", "null", "not specified", "tbd", "unknown"}
 
 
 @dataclass(frozen=True)
@@ -30,95 +41,95 @@ class ScheduleQuestion:
 QuestionAnalysisResult = UnsupportedQuestion | ScheduleQuestion
 
 
-class QuestionsClassifier(dspy.Signature):
-    """Classify whether a question contains a self-contained Caltrain schedule lookup.
+SCHEDULE_QUESTION_INSTRUCTIONS = """\
+Decide whether a message is a self-contained Caltrain schedule lookup and, if it is, extract the route and the departure time.
 
-    A supported question identifies both departure and arrival stations. A departure
-    time is optional. Reject questions that omit either station or depend on prior
-    conversational context.
-    """
+## is_schedule_question
+True only when the message asks which trains run from one specific Caltrain station to another specific, different Caltrain station, optionally at or around a departure time. Otherwise false. In particular, answer false when:
+- the departure station or the arrival station is missing, is not a Caltrain station (SFO airport, BART stations, Oakland, ...), is ambiguous ("near my office", "somewhere in Silicon Valley", "San Mateo or Hillsdale"), or depends on context the message does not contain ("from here", "from there", "the return train");
+- the direction is not stated ("between X and Y") or both stations are the same;
+- the message asks to arrive by a deadline, for the first or last train of the day, for a round trip, or for a trip with more than two stations;
+- the message is about fares, tickets, refunds, delays, alerts, cancellations, platforms, parking, bikes, pets, amenities, accessibility, or anything other than the timetable.
+When false, set every other output to null.
 
-    question: str = dspy.InputField()
-    is_schedule_question: bool = dspy.OutputField(
-        desc=(
-            "True only when both departure and arrival stations can be resolved "
-            "from this question; the departure time may be omitted"
-        )
-    )
+## Stations
+Map aliases, abbreviations, and misspellings to the canonical station, for example: "SF", "San Fran", "the city", "4th and King" -> san francisco; "Diridon", "San Jose" -> san jose diridon; "Cal Ave" -> california avenue; "Mt View" -> mountain view; "RWC" -> redwood city; "South City", "SSF", "South SF" -> south san francisco; "22nd St" -> 22nd street; "B'way" -> broadway.
+
+## departure_time
+The local wall-clock time the user wants to leave, formatted as YYYY-MM-DDTHH:MM (24-hour, no UTC offset). Null when the message states no time or asks for the next train.
+- Use the stated time exactly; do not round it and do not shift it by travel time. "After 6 PM" and "around 6 PM" both mean 18:00.
+- Take the calendar date from `upcoming_dates`; never work out weekdays yourself. With no day stated, use today. "This <weekday>" and a bare weekday name mean the first such day after today; "next <weekday>" means the first such day after today as well, or the one a week later when today is that weekday. An explicit calendar date wins.
+- A time without AM/PM takes it from context ("morning", "tonight", "after dinner", "this afternoon"). 12:00 AM to 12:59 AM is 00:00 to 00:59. "Midnight tonight" and a post-midnight time mentioned for tonight are on tomorrow's date.
+- "In N minutes/hours", "N minutes from now", or "N minutes ago": add or subtract from `reference_datetime`, carrying over the hour and the date.
+"""
 
 
-# also a signature, but it needs to be built dynamically after we load station names from the database
-def build_station_extraction_signature(
+def build_schedule_question_signature(
     stations: Sequence[str],
 ) -> type[dspy.Signature]:
-    """Build a DSPy signature that describes the known station names."""
+    """Build the DSPy signature that restricts stations to the known names."""
     station_names = tuple(stations)
     if not station_names:
         raise ValueError("At least one station name is required.")
 
-    known_stations = ", ".join(station_names)
+    # The station list is only known at runtime, so the Literal is built dynamically.
+    station_type: Any = Literal.__getitem__(station_names)
+    optional_station: Any = Optional.__getitem__(station_type)
 
     return type(
-        "ExtractDepartureAndArrivalStations",
+        "AnalyzeScheduleQuestion",
         (dspy.Signature,),
         {
-            "__doc__": (
-                "Extract a Caltrain route and optional departure time. Return null "
-                "for a station that cannot be resolved from the question. Return "
-                "null for the departure time when the question does not specify one."
-            ),
+            "__doc__": SCHEDULE_QUESTION_INSTRUCTIONS,
             "__annotations__": {
                 "question": str,
                 "reference_datetime": str,
-                "departure_station": str | None,
-                "arrival_station": str | None,
-                "departure_time": datetime | str | None,
+                "upcoming_dates": str,
+                "is_schedule_question": bool,
+                "departure_station": optional_station,
+                "arrival_station": optional_station,
+                "departure_time": str | None,
             },
-            "question": dspy.InputField(),
+            "question": dspy.InputField(desc="Message from the user"),
             "reference_datetime": dspy.InputField(
-                desc=(
-                    "Current date and time in the America/Los_Angeles timezone "
-                    "formatted as ISO 8601"
-                )
+                desc="Current local date and time in America/Los_Angeles (ISO 8601)"
+            ),
+            "upcoming_dates": dspy.InputField(
+                desc="Weekday and calendar date of today and the following days"
+            ),
+            "is_schedule_question": dspy.OutputField(
+                desc="Whether the message is a supported schedule lookup"
             ),
             "departure_station": dspy.OutputField(
-                desc=f"Canonical departure station from: {known_stations}; null if missing"
+                desc="Canonical station the trip starts from; null if unsupported"
             ),
             "arrival_station": dspy.OutputField(
-                desc=f"Canonical arrival station from: {known_stations}; null if missing"
+                desc="Canonical station the trip ends at; null if unsupported"
             ),
             "departure_time": dspy.OutputField(
-                desc=(
-                    "Approximate departure time as an ISO 8601 datetime; null when "
-                    "the question omits a time"
-                )
+                desc="Local departure time as YYYY-MM-DDTHH:MM; null if not stated"
             ),
         },
     )
 
 
-def datetime_calculator(
-    start_time: str,
-    delta_minutes: int,
-) -> str:
-    """Calculate a new datetime by adding minutes (including negative values) to a given start time."""
-    start_dt = datetime.fromisoformat(start_time)
-    new_dt = start_dt + timedelta(minutes=delta_minutes)
-    return new_dt.isoformat()
+def describe_upcoming_dates(reference_datetime: str) -> str:
+    """List the weekday of today and the following days so the model never has to derive one."""
+    today = datetime.fromisoformat(reference_datetime).date()
+    labels = {0: " (today)", 1: " (tomorrow)"}
+    return ", ".join(
+        f"{day:%A %Y-%m-%d}{labels.get(offset, '')}"
+        for offset in range(_UPCOMING_DAYS)
+        for day in (today + timedelta(days=offset),)
+    )
 
 
 class CaltrainScheduleHelper(dspy.Module):
-    """Classify a question and extract a schedule lookup when applicable."""
+    """Turn a question into a schedule lookup with a single LLM call."""
 
-    def __init__(
-        self,
-        question_classifier: dspy.Module,
-        stations_departure_time_extractor: dspy.Module,
-        stations: Sequence[str],
-    ) -> None:
+    def __init__(self, stations: Sequence[str]) -> None:
         super().__init__()
-        self._question_classifier = question_classifier
-        self._stations_departure_time_extractor = stations_departure_time_extractor
+        self.analyze = dspy.Predict(build_schedule_question_signature(stations))
         self._stations_by_normalized_name = {
             self._normalize_station(station): station for station in stations
         }
@@ -130,17 +141,21 @@ class CaltrainScheduleHelper(dspy.Module):
     @staticmethod
     def _parse_datetime(value: object) -> datetime | None:
         if isinstance(value, datetime):
-            return value
-        if not isinstance(value, str):
+            parsed = value
+        elif isinstance(value, str):
+            normalized = value.strip()
+            if normalized.endswith("Z"):
+                normalized = f"{normalized[:-1]}+00:00"
+            try:
+                parsed = datetime.fromisoformat(normalized)
+            except ValueError:
+                return None
+        else:
             return None
-
-        normalized = value.strip()
-        if normalized.endswith("Z"):
-            normalized = f"{normalized[:-1]}+00:00"
-        try:
-            return datetime.fromisoformat(normalized)
-        except ValueError:
-            return None
+        # The model answers in Caltrain wall time without a UTC offset.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=CALTRAIN_TIMEZONE)
+        return parsed
 
     def _canonical_station(self, value: object) -> str | None:
         if not isinstance(value, str):
@@ -151,50 +166,38 @@ class CaltrainScheduleHelper(dspy.Module):
         self, value: object, reference_datetime: str
     ) -> datetime | None:
         if value is None or (
-            isinstance(value, str)
-            and value.strip().casefold()
-            in {"", "none", "null", "not specified", "tbd", "unknown"}
+            isinstance(value, str) and value.strip().casefold() in _MISSING_TIME_VALUES
         ):
             value = reference_datetime
         return self._parse_datetime(value)
 
-    def forward(self, question: str, reference_datetime: str) -> QuestionAnalysisResult:
-        logger.info(f"Classifying question:\n{question}")
-        classification = self._question_classifier(question=question)
-        logger.info(f"Classification verdict: {classification}")
+    def _to_result(
+        self, analysis: dspy.Prediction, question: str, reference_datetime: str
+    ) -> QuestionAnalysisResult:
+        logger.info(f"Question analysis for {question!r}: {analysis}")
 
-        if not classification.is_schedule_question:
-            logger.warning(
-                f"Question is not a schedule question. Original question: {question}"
-            )
+        if not getattr(analysis, "is_schedule_question", False):
+            logger.warning(f"Not a schedule question: {question!r}")
             return UnsupportedQuestion()
 
-        logger.info(
-            f"Extracting stations and departure time from question:\n{question}"
-        )
-        extraction = self._stations_departure_time_extractor(
-            question=question, reference_datetime=reference_datetime
-        )
-        logger.info(f"Extraction result: {extraction}")
-
         departure_station = self._canonical_station(
-            getattr(extraction, "departure_station", None)
+            getattr(analysis, "departure_station", None)
         )
         arrival_station = self._canonical_station(
-            getattr(extraction, "arrival_station", None)
+            getattr(analysis, "arrival_station", None)
         )
         departure_time = self._resolve_departure_time(
-            getattr(extraction, "departure_time", None), reference_datetime
+            getattr(analysis, "departure_time", None), reference_datetime
         )
 
         if (
             departure_station is None
             or arrival_station is None
             or departure_time is None
+            or departure_station == arrival_station
         ):
             logger.warning(
-                "Question did not produce a complete, valid schedule lookup. "
-                f"Original question: {question}"
+                f"Question did not produce a complete, valid schedule lookup: {question!r}"
             )
             return UnsupportedQuestion()
 
@@ -204,33 +207,57 @@ class CaltrainScheduleHelper(dspy.Module):
             departure_time=departure_time,
         )
 
+    def forward(self, question: str, reference_datetime: str) -> QuestionAnalysisResult:
+        analysis = self.analyze(
+            question=question,
+            reference_datetime=reference_datetime,
+            upcoming_dates=describe_upcoming_dates(reference_datetime),
+        )
+        return self._to_result(analysis, question, reference_datetime)
+
+    async def aforward(
+        self, question: str, reference_datetime: str
+    ) -> QuestionAnalysisResult:
+        analysis = await self.analyze.acall(
+            question=question,
+            reference_datetime=reference_datetime,
+            upcoming_dates=describe_upcoming_dates(reference_datetime),
+        )
+        return self._to_result(analysis, question, reference_datetime)
+
+
+def build_lm(llm_settings: OpenRouterSettings) -> dspy.LM:
+    if not llm_settings.api_key.strip():
+        raise ValueError("OPENROUTER_API_KEY environment variable is required.")
+
+    extra_body: dict[str, Any] = {}
+    if llm_settings.reasoning_effort:
+        # Unset means the model's default, which is the most accurate setting.
+        extra_body["reasoning"] = {"effort": llm_settings.reasoning_effort}
+    if llm_settings.fallback_model:
+        # OpenRouter retries with these models when the primary one fails or is
+        # no longer served.
+        extra_body["models"] = [llm_settings.fallback_model]
+
+    return dspy.LM(
+        f"openrouter/{llm_settings.model}",
+        api_key=llm_settings.api_key,
+        max_tokens=LLM_MAX_TOKENS,
+        timeout=LLM_TIMEOUT_SECONDS,
+        num_retries=LLM_NUM_RETRIES,
+        extra_body=extra_body,
+        # Every prompt embeds the current time, so cached answers are never reused.
+        cache=False,
+    )
+
 
 def build_caltrain_schedule_helper(
     llm_settings: OpenRouterSettings, stations: Sequence[str]
 ) -> CaltrainScheduleHelper:
-    if not llm_settings.api_key.strip():
-        raise ValueError("OPENROUTER_API_KEY environment variable is required.")
+    dspy.configure(lm=build_lm(llm_settings))
 
-    lm = dspy.LM(
-        f"openrouter/{llm_settings.model}",
-        api_key=llm_settings.api_key,
-    )
-    dspy.configure(lm=lm)
-
-    # This is a trusted, repository-owned pickle created with
-    # `save(..., save_program=True)`.
-    program = dspy.load(str(OPTIMIZED_PROGRAM_PATH), allow_pickle=True)
-    if not isinstance(program, CaltrainScheduleHelper):
-        raise TypeError(
-            "Optimized program must deserialize to CaltrainScheduleHelper, "
-            f"got {type(program).__name__}."
-        )
-
-    expected_stations = {program._normalize_station(station) for station in stations}
-    optimized_stations = set(program._stations_by_normalized_name)
-    if optimized_stations != expected_stations:
-        raise ValueError(
-            "Optimized program station list does not match the current GTFS stations."
-        )
-
+    program = CaltrainScheduleHelper(stations)
+    if OPTIMIZED_PROGRAM_PATH.exists():
+        program.load(str(OPTIMIZED_PROGRAM_PATH))
+        logger.info(f"Loaded optimized prompt from: {OPTIMIZED_PROGRAM_PATH}")
     return program

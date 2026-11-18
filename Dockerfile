@@ -18,7 +18,7 @@ RUN uv sync --locked --no-dev --no-install-project
 
 COPY src ./src
 COPY data/caltrain-ca-us.zip ./data/caltrain-ca-us.zip
-COPY data/prog_caltrain_schedule_helper_gepa_medium/ ./data/prog_caltrain_schedule_helper_gepa_medium/
+COPY data/schedule_question_program.json ./data/schedule_question_program.json
 COPY sql ./sql
 
 RUN uv sync --locked --no-dev
@@ -41,7 +41,7 @@ RUN apt-get update \
 COPY --from=builder /app/.venv /app/.venv
 COPY src ./src
 COPY data/caltrain-ca-us.zip ./data/caltrain-ca-us.zip
-COPY data/prog_caltrain_schedule_helper_gepa_medium/ ./data/prog_caltrain_schedule_helper_gepa_medium/
+COPY data/schedule_question_program.json ./data/schedule_question_program.json
 COPY sql ./sql
 
 RUN chown -R app:app /app /home/app

@@ -47,13 +47,27 @@ Required variables:
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_MODEL`
 
+Optional variables:
+
+- `OPENROUTER_FALLBACK_MODEL`: model OpenRouter switches to when
+  `OPENROUTER_MODEL` fails or is no longer served.
+- `OPENROUTER_REASONING_EFFORT`: OpenRouter reasoning effort (`none`, `low`,
+  ...). Leave it unset for the model's default, which is the most accurate.
+
 Example `.env`:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 OPENROUTER_API_KEY=your-openrouter-api-key
-OPENROUTER_MODEL=openai/gpt-4.1-mini
+OPENROUTER_MODEL=anthropic/claude-haiku-5.5
+OPENROUTER_FALLBACK_MODEL=openai/gpt-6-luna
 ```
+
+The prompt is tuned for `anthropic/claude-haiku-5.5`: each question takes one
+LLM call of about 1.2 seconds and costs roughly $0.0005. On the 179 labeled
+questions that setup answers 178-179 correctly. Setting
+`OPENROUTER_REASONING_EFFORT=none` cuts the call to about 0.8 seconds at the
+price of a few more misses (175 of 179).
 
 ### Run the bot
 
@@ -89,11 +103,18 @@ uv run ty check src
 
 ### Re-optimize the DSPy program
 
-The question-analysis program was optimized with DSPy's GEPA workflow in
-`evals/Evals & Optimizer.ipynb`. To reproduce or update the optimization, open
-the notebook with `uv run jupyter lab` and rerun all cells; it saves the refreshed
-program to `data/prog_caltrain_schedule_helper_gepa_medium`, which the bot loads
-at startup.
+Question analysis is one DSPy predictor whose instructions were optimized with
+GEPA in `evals/Evals & Optimizer.ipynb`, using the labeled questions in
+`data/train.jsonl` and `data/validation.jsonl`. The notebook saves the result to
+`data/schedule_question_program.json`, which the bot loads at startup; without
+that file the bot uses the built-in instructions in `question_analysis.py`.
+
+To redo the optimization (about $1.25 of OpenRouter usage), run:
+
+```shell
+uv run --env-file .env jupyter nbconvert --to notebook --execute --inplace \
+  "evals/Evals & Optimizer.ipynb" --ExecutePreprocessor.timeout=-1
+```
 
 ## Docker And Raspberry Pi
 
@@ -120,8 +141,12 @@ Example `/opt/caltrain-bot/caltrain-bot.env`:
 ```dotenv
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 OPENROUTER_API_KEY=your-openrouter-api-key
-OPENROUTER_MODEL=openai/gpt-4.1-mini
+OPENROUTER_MODEL=anthropic/claude-haiku-5.5
+OPENROUTER_FALLBACK_MODEL=openai/gpt-6-luna
 ```
+
+The schedule is expanded into an in-memory SQLite database of about 1.6 GB, so
+the container needs roughly 2.5 GB of free memory while it starts.
 
 Deploy on a Raspberry Pi:
 
@@ -137,11 +162,13 @@ docker run -d \
 
 - `src/caltrain_bot/__init__.py`: CLI entrypoint that builds and runs the Telegram app.
 - `src/caltrain_bot/telegram_bot.py`: Telegram bot handlers and user-facing message formatting.
-- `src/caltrain_bot/question_analysis.py`: DSPy-based question classification and entity extraction.
+- `src/caltrain_bot/question_analysis.py`: DSPy program that classifies a question and extracts stations and time in a single LLM call.
 - `src/caltrain_bot/schedule.py`: GTFS loading, SQL preprocessing, station lookup, and train queries.
 - `src/caltrain_bot/config.py`: Environment validation and repo-relative asset paths.
 - `sql/train_stop_timeline.sql`: SQL used to preprocess imported GTFS data into query-friendly tables.
 - `data/caltrain-ca-us.zip`: Bundled Caltrain GTFS feed used by the app.
+- `data/schedule_question_program.json`: GEPA-optimized prompt loaded at startup.
+- `evals/Evals & Optimizer.ipynb`: evaluation and GEPA optimization of the question analysis.
 - `tests/unit/`: Unit tests.
 
 ## Contributing

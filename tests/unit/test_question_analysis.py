@@ -1,162 +1,296 @@
+import asyncio
 from datetime import datetime
+from typing import get_args
 
 import dspy
 import pytest
+from dspy.utils import DummyLM
 
+from caltrain_bot import question_analysis
 from caltrain_bot.config import OpenRouterSettings
 from caltrain_bot.question_analysis import (
+    CALTRAIN_TIMEZONE,
     CaltrainScheduleHelper,
-    OPTIMIZED_PROGRAM_PATH,
     ScheduleQuestion,
     UnsupportedQuestion,
     build_caltrain_schedule_helper,
-    build_station_extraction_signature,
+    build_lm,
+    build_schedule_question_signature,
+    describe_upcoming_dates,
 )
 
 STATIONS = ("san francisco", "palo alto")
+REFERENCE_DATETIME = "2026-08-24T15:00:00-07:00"
 
 
-class StubModule(dspy.Module):
+class StubPredict(dspy.Module):
+    """Stands in for the single LLM-backed predictor."""
+
     def __init__(self, prediction: dspy.Prediction) -> None:
         super().__init__()
         self.prediction = prediction
-        self.questions: list[str] = []
-        self.reference_datetimes: list[str | None] = []
+        self.calls: list[dict[str, str]] = []
 
-    def forward(
-        self, question: str, reference_datetime: str | None = None
-    ) -> dspy.Prediction:
-        self.questions.append(question)
-        self.reference_datetimes.append(reference_datetime)
+    def forward(self, **kwargs: str) -> dspy.Prediction:
+        self.calls.append(kwargs)
         return self.prediction
 
-
-def test_station_extraction_signature_accepts_reference_datetime():
-    signature = build_station_extraction_signature(STATIONS)
-
-    assert set(signature.input_fields) == {"question", "reference_datetime"}
+    async def aforward(self, **kwargs: str) -> dspy.Prediction:
+        return self.forward(**kwargs)
 
 
-def test_builder_loads_the_optimized_program(monkeypatch):
-    classifier = StubModule(dspy.Prediction(is_schedule_question=False))
-    extractor = StubModule(dspy.Prediction())
-    optimized_program = CaltrainScheduleHelper(classifier, extractor, STATIONS)
-    load_calls: list[tuple[str, bool]] = []
+def _helper(**prediction: object) -> tuple[CaltrainScheduleHelper, StubPredict]:
+    helper = CaltrainScheduleHelper(STATIONS)
+    stub = StubPredict(dspy.Prediction(**prediction))
+    helper.analyze = stub
+    return helper, stub
 
-    def fake_load(path: str, allow_pickle: bool):
-        load_calls.append((path, allow_pickle))
-        return optimized_program
 
-    monkeypatch.setattr(dspy, "load", fake_load)
+def test_signature_limits_stations_to_the_known_names():
+    signature = build_schedule_question_signature(STATIONS)
 
-    result = build_caltrain_schedule_helper(
-        OpenRouterSettings(api_key="test-key", model="test-model"),
-        STATIONS,
+    assert set(signature.input_fields) == {
+        "question",
+        "reference_datetime",
+        "upcoming_dates",
+    }
+    assert set(signature.output_fields) == {
+        "is_schedule_question",
+        "departure_station",
+        "arrival_station",
+        "departure_time",
+    }
+    station_type, none_type = get_args(
+        signature.output_fields["departure_station"].annotation
     )
+    assert get_args(station_type) == STATIONS
+    assert none_type is type(None)
 
-    assert result is optimized_program
-    assert load_calls == [(str(OPTIMIZED_PROGRAM_PATH), True)]
+
+def test_signature_requires_stations():
+    with pytest.raises(ValueError, match="At least one station"):
+        build_schedule_question_signature(())
 
 
-def test_builder_rejects_an_optimized_program_with_stale_stations(monkeypatch):
-    classifier = StubModule(dspy.Prediction(is_schedule_question=False))
-    extractor = StubModule(dspy.Prediction())
-    optimized_program = CaltrainScheduleHelper(
-        classifier, extractor, ("san francisco",)
+def test_describe_upcoming_dates_names_each_weekday():
+    upcoming_dates = describe_upcoming_dates(REFERENCE_DATETIME).split(", ")
+
+    assert upcoming_dates[:3] == [
+        "Monday 2026-08-24 (today)",
+        "Tuesday 2026-08-25 (tomorrow)",
+        "Wednesday 2026-08-26",
+    ]
+    assert upcoming_dates[-1] == "Sunday 2026-09-06"
+    assert len(upcoming_dates) == 14
+
+
+def test_helper_analyzes_a_question_with_a_single_call():
+    helper, stub = _helper(
+        is_schedule_question=True,
+        departure_station="San Francisco",
+        arrival_station="palo alto",
+        departure_time="2026-08-24T19:00",
     )
-    monkeypatch.setattr(dspy, "load", lambda *_args, **_kwargs: optimized_program)
-
-    with pytest.raises(ValueError, match="station list does not match"):
-        build_caltrain_schedule_helper(
-            OpenRouterSettings(api_key="test-key", model="test-model"),
-            STATIONS,
-        )
-
-
-def test_helper_does_not_extract_an_unsupported_question():
-    classifier = StubModule(dspy.Prediction(is_schedule_question=False))
-    extractor = StubModule(dspy.Prediction())
-    helper = CaltrainScheduleHelper(classifier, extractor, STATIONS)
 
     result = helper(
-        question="How much is a ticket?",
-        reference_datetime="2026-08-24T15:00:00-07:00",
+        question="San Francisco to Palo Alto after 7pm",
+        reference_datetime=REFERENCE_DATETIME,
+    )
+
+    assert result == ScheduleQuestion(
+        departure_station="san francisco",
+        arrival_station="palo alto",
+        departure_time=datetime(2026, 8, 24, 19, 0, tzinfo=CALTRAIN_TIMEZONE),
+    )
+    assert stub.calls == [
+        {
+            "question": "San Francisco to Palo Alto after 7pm",
+            "reference_datetime": REFERENCE_DATETIME,
+            "upcoming_dates": describe_upcoming_dates(REFERENCE_DATETIME),
+        }
+    ]
+
+
+def test_helper_supports_async_calls():
+    helper, stub = _helper(
+        is_schedule_question=True,
+        departure_station="san francisco",
+        arrival_station="palo alto",
+        departure_time="2026-08-24T19:00",
+    )
+
+    result = asyncio.run(
+        helper.acall(question="SF to Palo Alto", reference_datetime=REFERENCE_DATETIME)
+    )
+
+    assert isinstance(result, ScheduleQuestion)
+    assert len(stub.calls) == 1
+
+
+def test_helper_keeps_an_explicit_utc_offset():
+    helper, _ = _helper(
+        is_schedule_question=True,
+        departure_station="san francisco",
+        arrival_station="palo alto",
+        departure_time="2026-08-24T19:00:00-07:00",
+    )
+
+    result = helper(question="SF to PA at 7", reference_datetime=REFERENCE_DATETIME)
+
+    assert isinstance(result, ScheduleQuestion)
+    assert result.departure_time == datetime.fromisoformat("2026-08-24T19:00:00-07:00")
+
+
+def test_helper_rejects_an_unsupported_question():
+    helper, _ = _helper(
+        is_schedule_question=False,
+        departure_station=None,
+        arrival_station=None,
+        departure_time=None,
+    )
+
+    result = helper(
+        question="How much is a ticket?", reference_datetime=REFERENCE_DATETIME
     )
 
     assert result == UnsupportedQuestion()
-    assert classifier.questions == ["How much is a ticket?"]
-    assert classifier.reference_datetimes == [None]
-    assert extractor.questions == []
-    assert extractor.reference_datetimes == []
 
 
-def test_helper_extracts_a_schedule_question():
-    departure_time = datetime.fromisoformat("2026-08-24T19:00:00-07:00")
-    classifier = StubModule(dspy.Prediction(is_schedule_question=True))
-    extractor = StubModule(
-        dspy.Prediction(
-            departure_station="San Francisco",
-            arrival_station="Palo Alto",
-            departure_time=departure_time,
-        )
+@pytest.mark.parametrize("missing_time", [None, "TBD", "null", ""])
+def test_helper_uses_reference_datetime_when_departure_time_is_missing(missing_time):
+    helper, _ = _helper(
+        is_schedule_question=True,
+        departure_station="san francisco",
+        arrival_station="palo alto",
+        departure_time=missing_time,
     )
-    helper = CaltrainScheduleHelper(classifier, extractor, STATIONS)
 
-    reference_datetime = "2026-08-24T15:00:00-07:00"
     result = helper(
-        question="San Francisco to Palo Alto after 7pm",
-        reference_datetime=reference_datetime,
+        question="San Francisco to Palo Alto?", reference_datetime=REFERENCE_DATETIME
     )
 
     assert result == ScheduleQuestion(
         departure_station="san francisco",
         arrival_station="palo alto",
+        departure_time=datetime.fromisoformat(REFERENCE_DATETIME),
+    )
+
+
+@pytest.mark.parametrize(
+    ("arrival_station", "departure_time"),
+    [
+        ("unknown", "2026-08-24T19:00"),
+        (None, "2026-08-24T19:00"),
+        ("san francisco", "2026-08-24T19:00"),
+        ("palo alto", "seven-ish"),
+    ],
+)
+def test_helper_rejects_an_incomplete_or_invalid_lookup(
+    arrival_station, departure_time
+):
+    helper, _ = _helper(
+        is_schedule_question=True,
+        departure_station="san francisco",
+        arrival_station=arrival_station,
         departure_time=departure_time,
     )
-    assert classifier.questions == ["San Francisco to Palo Alto after 7pm"]
-    assert classifier.reference_datetimes == [None]
-    assert extractor.questions == ["San Francisco to Palo Alto after 7pm"]
-    assert extractor.reference_datetimes == [reference_datetime]
-
-
-def test_helper_uses_reference_datetime_when_departure_time_is_missing():
-    classifier = StubModule(dspy.Prediction(is_schedule_question=True))
-    extractor = StubModule(
-        dspy.Prediction(
-            departure_station="san francisco",
-            arrival_station="palo alto",
-            departure_time="TBD",
-        )
-    )
-    helper = CaltrainScheduleHelper(classifier, extractor, STATIONS)
-
-    reference_datetime = "2026-08-24T15:00:00-07:00"
-    result = helper(
-        question="San Francisco to Palo Alto?",
-        reference_datetime=reference_datetime,
-    )
-
-    assert result == ScheduleQuestion(
-        departure_station="san francisco",
-        arrival_station="palo alto",
-        departure_time=datetime.fromisoformat(reference_datetime),
-    )
-
-
-def test_helper_rejects_an_unknown_station_without_raising():
-    classifier = StubModule(dspy.Prediction(is_schedule_question=True))
-    extractor = StubModule(
-        dspy.Prediction(
-            departure_station="san francisco",
-            arrival_station="unknown",
-            departure_time="2026-08-24T19:00:00-07:00",
-        )
-    )
-    helper = CaltrainScheduleHelper(classifier, extractor, STATIONS)
 
     result = helper(
         question="What trains leave San Francisco at 7pm?",
-        reference_datetime="2026-08-24T15:00:00-07:00",
+        reference_datetime=REFERENCE_DATETIME,
     )
 
     assert result == UnsupportedQuestion()
+
+
+def test_helper_parses_a_model_response_end_to_end():
+    helper = CaltrainScheduleHelper(STATIONS)
+    lm = DummyLM(
+        [
+            {
+                "is_schedule_question": "True",
+                "departure_station": "palo alto",
+                "arrival_station": "san francisco",
+                "departure_time": "2026-08-25T08:30",
+            }
+        ]
+    )
+
+    with dspy.context(lm=lm):
+        result = helper(
+            question="Palo Alto to SF tomorrow at 8:30am",
+            reference_datetime=REFERENCE_DATETIME,
+        )
+
+    assert result == ScheduleQuestion(
+        departure_station="palo alto",
+        arrival_station="san francisco",
+        departure_time=datetime(2026, 8, 25, 8, 30, tzinfo=CALTRAIN_TIMEZONE),
+    )
+
+
+def test_build_lm_configures_a_fast_failing_openrouter_model():
+    lm = build_lm(OpenRouterSettings(api_key="test-key", model="vendor/model"))
+
+    assert lm.model == "openrouter/vendor/model"
+    assert lm.cache is False
+    assert lm.num_retries == question_analysis.LLM_NUM_RETRIES
+    assert lm.kwargs["timeout"] == question_analysis.LLM_TIMEOUT_SECONDS
+    assert lm.kwargs["max_tokens"] == question_analysis.LLM_MAX_TOKENS
+    assert lm.kwargs["extra_body"] == {}
+
+
+def test_build_lm_passes_optional_openrouter_settings():
+    lm = build_lm(
+        OpenRouterSettings(
+            api_key="test-key",
+            model="vendor/model",
+            fallback_model="other/model",
+            reasoning_effort="none",
+        )
+    )
+
+    assert lm.kwargs["extra_body"] == {
+        "reasoning": {"effort": "none"},
+        "models": ["other/model"],
+    }
+
+
+def test_build_lm_requires_an_api_key():
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        build_lm(OpenRouterSettings(api_key=" ", model="vendor/model"))
+
+
+def test_builder_works_without_an_optimized_prompt(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        question_analysis, "OPTIMIZED_PROGRAM_PATH", tmp_path / "missing.json"
+    )
+
+    helper = build_caltrain_schedule_helper(
+        OpenRouterSettings(api_key="test-key", model="test-model"), STATIONS
+    )
+
+    assert (
+        helper.analyze.signature.instructions
+        == question_analysis.SCHEDULE_QUESTION_INSTRUCTIONS.strip()
+    )
+
+
+def test_builder_loads_the_optimized_prompt(monkeypatch, tmp_path):
+    optimized = CaltrainScheduleHelper(STATIONS)
+    optimized.analyze.signature = optimized.analyze.signature.with_instructions(
+        "Optimized instructions."
+    )
+    program_path = tmp_path / "program.json"
+    optimized.save(str(program_path))
+    monkeypatch.setattr(question_analysis, "OPTIMIZED_PROGRAM_PATH", program_path)
+
+    helper = build_caltrain_schedule_helper(
+        OpenRouterSettings(api_key="test-key", model="test-model"), STATIONS
+    )
+
+    assert helper.analyze.signature.instructions == "Optimized instructions."
+    station_type, _ = get_args(
+        helper.analyze.signature.output_fields["arrival_station"].annotation
+    )
+    assert get_args(station_type) == STATIONS
