@@ -5,9 +5,9 @@ Caltrain Bot answers Caltrain schedule questions in plain English, as a Telegram
 Try the live bot on Telegram: [@CalTrain](https://t.me/CalTrain)
 
 Read the build story:
-[Part 1](https://dima.us.kg/learning-by-building-part-1-caltrain-bot-and-the-theory-practice-gap/),
-[Part 2](https://dima.us.kg/learning-by-building-part-2-caltrain-bot-sql-with-llms-and-dspy/),
-[Part 3](https://dima.us.kg/learning-by-building-part-3-caltrain-bot-local-llms-and-reality/)
+[Part 1](https://dimatimofeev.com/learning-by-building-part-1-caltrain-bot-and-the-theory-practice-gap/),
+[Part 2](https://dimatimofeev.com/learning-by-building-part-2-caltrain-bot-sql-with-llms-and-dspy/),
+[Part 3](https://dimatimofeev.com/learning-by-building-part-3-caltrain-bot-local-llms-and-reality/)
 
 ## What It Does
 
