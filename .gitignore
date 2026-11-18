@@ -21,3 +21,9 @@ wheels/
 
 # Debug data
 data/schedule.db
+
+# Web usage statistics
+data/usage.db*
+
+# Node tooling for the web stylesheet
+node_modules/

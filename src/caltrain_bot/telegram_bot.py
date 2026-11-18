@@ -1,15 +1,13 @@
 import asyncio
 import functools
-import os
-from datetime import date, datetime
+from datetime import datetime
 from html import escape
-from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
 from loguru import logger
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
@@ -17,20 +15,8 @@ from telegram.ext import (
     filters,
 )
 
-from caltrain_bot.config import load_settings
-from caltrain_bot.question_analysis import (
-    CaltrainScheduleHelper,
-    UnsupportedQuestion,
-    build_caltrain_schedule_helper,
-)
-from caltrain_bot.schedule import (
-    ScheduleManager,
-    Train,
-    check_feed_expiry,
-    is_after_feed_end,
-)
-
-_ = load_dotenv()
+from caltrain_bot.answers import ScheduleService, answer_question
+from caltrain_bot.schedule import Train
 
 
 def _format_timestamp(value: datetime | str) -> str:
@@ -131,68 +117,30 @@ async def _show_typing(update: Update) -> None:
 async def get_trains_info(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    schedule_manager: ScheduleManager,
-    schedule_helper: CaltrainScheduleHelper,
-    feed_end_date: date,
+    service: ScheduleService,
 ) -> None:
     if not update.message:
         return
     if not update.message.text:
         _ = await update.message.reply_text("Sorry, I can only process text messages.")
         return
-    question = update.message.text
-    reference_datetime = datetime.now(ZoneInfo("America/Los_Angeles")).isoformat()
-    try:
-        # The typing indicator goes out while the question is being analyzed, so
-        # it does not delay the answer.
-        _, schedule_helper_result = await asyncio.gather(
-            _show_typing(update),
-            schedule_helper.acall(
-                question=question, reference_datetime=reference_datetime
-            ),
-        )
-    except Exception:
-        logger.exception(f"Question analysis failed for: {question!r}")
-        _ = await update.message.reply_text(
-            "Sorry, I could not process your question right now. "
-            "Please try again in a moment."
-        )
-        return
-    if isinstance(schedule_helper_result, UnsupportedQuestion):
-        _ = await update.message.reply_text(
-            "I can only help with Caltrain train schedules, routes, and stations."
-        )
-        return
-    if is_after_feed_end(schedule_helper_result.departure_time, feed_end_date):
-        _ = await update.message.reply_text(
-            "We sincerely apologize! Our schedule data does not cover that date yet. "
-            "We will update the schedule soon, so please check back later."
-        )
-        return
-    trains = schedule_manager.get_trains(
-        departure_station_query_name=schedule_helper_result.departure_station,
-        arrival_station_query_name=schedule_helper_result.arrival_station,
-        departure_time=schedule_helper_result.departure_time,
+    # The typing indicator goes out while the question is being analyzed, so
+    # it does not delay the answer.
+    _, answer = await asyncio.gather(
+        _show_typing(update),
+        answer_question(update.message.text, service),
     )
-    trains_message = format_trains_message(trains)
+    if answer.message is not None:
+        _ = await update.message.reply_text(answer.message)
+        return
+    trains_message = format_trains_message(list(answer.trains))
     _ = await update.message.reply_text(trains_message, parse_mode="HTML")
 
 
-def build_app():
-    settings = load_settings()
-    feed_end_date = check_feed_expiry(settings.gtfs_file_path)
-    schedule_manager = ScheduleManager(
-        schedules_file=settings.gtfs_file_path,
-        preprocess_sql=settings.preprocessing_sql_path,
-        use_in_memory_db=(os.getenv("DEBUG") != "1"),
-    )
-    caltrain_schedule_helper = build_caltrain_schedule_helper(
-        settings.llm, schedule_manager.stations
-    )
-
+def build_app(token: str, service: ScheduleService) -> Application:
     app = (
         ApplicationBuilder()
-        .token(settings.telegram_bot_token)
+        .token(token)
         # Handle each message as soon as it arrives instead of queueing behind
         # another user's question.
         .concurrent_updates(True)
@@ -203,12 +151,7 @@ def build_app():
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            functools.partial(
-                get_trains_info,
-                schedule_manager=schedule_manager,
-                schedule_helper=caltrain_schedule_helper,
-                feed_end_date=feed_end_date,
-            ),
+            functools.partial(get_trains_info, service=service),
         )
     )
     return app

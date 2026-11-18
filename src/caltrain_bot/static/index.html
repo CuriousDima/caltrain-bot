@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Ask a Caltrain schedule question in plain English and get the next trains.">
+<meta name="theme-color" content="#fafaf9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c0a09" media="(prefers-color-scheme: dark)">
+<title>Caltrain schedule</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9A%86%3C/text%3E%3C/svg%3E">
+<!-- The server inlines app.css in place of this tag. Rebuild it after changing
+     any class below; see "Web interface" in README.md. -->
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="bg-stone-50 text-stone-900 antialiased dark:bg-stone-950 dark:text-stone-100">
+<main class="mx-auto flex min-h-dvh max-w-md flex-col px-4 pt-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+  <h1 class="text-2xl font-bold tracking-tight">Caltrain schedule</h1>
+
+  <form id="ask-form" class="mt-3" novalidate>
+    <label for="question" class="block text-base text-stone-600 dark:text-stone-400">Where from, where to, and when?</label>
+    <input id="question" name="question" type="text" maxlength="300" required autofocus
+           autocomplete="off" enterkeyhint="search" placeholder="Palo Alto to SF at 5pm"
+           class="mt-2 h-14 w-full rounded-2xl border border-stone-300 bg-white px-4 text-lg text-stone-900 placeholder:text-stone-400 focus:border-red-600 focus:outline-2 focus:outline-offset-0 focus:outline-red-600/30 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 dark:placeholder:text-stone-500">
+    <button id="ask-button" type="submit"
+            class="mt-3 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 text-lg font-semibold text-white active:bg-red-700 disabled:opacity-70">
+      <svg id="ask-spinner" hidden class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" class="opacity-30"></circle>
+        <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+      </svg>
+      <span id="ask-label">Find trains</span>
+    </button>
+  </form>
+
+  <section id="answer" aria-live="polite" class="transition-opacity aria-busy:opacity-40">
+    <div id="summary" hidden class="mt-6">
+      <h2 class="text-xl leading-tight font-semibold">
+        <span id="from"></span>
+        <span aria-hidden="true" class="text-stone-400">→</span><span class="sr-only">to</span>
+        <span id="to"></span>
+      </h2>
+      <p id="when" class="mt-1 text-sm text-stone-600 dark:text-stone-400"></p>
+    </div>
+    <div id="notice" hidden class="mt-4 rounded-2xl bg-stone-200/70 p-4 text-base dark:bg-stone-900">
+      <p id="notice-text"></p>
+      <p id="notice-hint" hidden class="mt-1 text-sm text-stone-600 dark:text-stone-400">Name two stations, like “Palo Alto to San Francisco at 5pm”.</p>
+    </div>
+    <ol id="trains" class="mt-4 space-y-3 empty:hidden"></ol>
+  </section>
+
+  <section class="mt-6">
+    <h2 id="shortcuts-label" class="text-xs font-semibold tracking-wide text-stone-500 uppercase dark:text-stone-400">Try</h2>
+    <div id="shortcuts" class="mt-2 flex flex-wrap gap-2"></div>
+  </section>
+
+  <footer class="mt-auto pt-10 text-center text-xs text-stone-500 dark:text-stone-400">
+    Timetable only, no live delays. Unofficial, not affiliated with Caltrain.
+  </footer>
+</main>
+
+<template id="train-template">
+  <li class="rounded-2xl border border-stone-200 bg-white p-4 data-departed:opacity-55 data-next:border-red-500 data-next:ring-1 data-next:ring-red-500 dark:border-stone-800 dark:bg-stone-900">
+    <p data-role="countdown" hidden class="mb-1 text-sm font-semibold text-stone-500 data-next:text-red-600 dark:text-stone-400 dark:data-next:text-red-400"></p>
+    <p class="text-2xl font-bold tabular-nums">
+      <span data-role="departs"></span>
+      <span aria-hidden="true" class="font-normal text-stone-400">→</span><span class="sr-only">arrives</span>
+      <span data-role="arrives"></span>
+    </p>
+    <p data-role="details" class="mt-1 text-sm text-stone-600 dark:text-stone-400"></p>
+  </li>
+</template>
+
+<template id="shortcut-template">
+  <button type="button" class="min-h-11 rounded-full border border-stone-300 bg-white px-4 text-left text-sm text-stone-800 active:bg-stone-100 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:active:bg-stone-800"></button>
+</template>
+
+<script>
+(() => {
+  "use strict";
+
+  const EXAMPLES = [
+    "Palo Alto to SF",
+    "Mountain View to San Jose at 6pm",
+    "Millbrae to 22nd Street tomorrow 8:30am",
+  ];
+  const RECENT_KEY = "caltrain-recent-questions";
+  const MAX_RECENT = 4;
+  const VISITOR_KEY = "caltrain-visitor";
+  const REQUEST_TIMEOUT_MS = 30000;
+  const OFFLINE_MESSAGE = "Could not reach the server. Check your connection and try again.";
+
+  const $ = (id) => document.getElementById(id);
+  const form = $("ask-form");
+  const input = $("question");
+  const button = $("ask-button");
+  const answer = $("answer");
+  const trainList = $("trains");
+  let busy = false;
+
+  function loadRecent() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(RECENT_KEY));
+      if (!Array.isArray(stored)) return [];
+      return stored.filter((item) => typeof item === "string").slice(0, MAX_RECENT);
+    } catch {
+      return [];
+    }
+  }
+
+  function saveRecent(question) {
+    const key = question.toLowerCase();
+    const recent = [question, ...loadRecent().filter((item) => item.toLowerCase() !== key)];
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(recent.slice(0, MAX_RECENT)));
+    } catch {
+      // Private browsing: the page works the same without the shortcuts.
+    }
+  }
+
+  // A random ID with no personal data, sent with each question so the server
+  // can count how many people use the page. This is its only use.
+  function visitorId() {
+    try {
+      let id = localStorage.getItem(VISITOR_KEY);
+      if (!/^[0-9a-f]{32}$/.test(id || "")) {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        id = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+        localStorage.setItem(VISITOR_KEY, id);
+      }
+      return id;
+    } catch {
+      return null;
+    }
+  }
+
+  function renderShortcuts() {
+    const recent = loadRecent();
+    $("shortcuts-label").textContent = recent.length ? "Recent" : "Try";
+    const template = $("shortcut-template").content.firstElementChild;
+    $("shortcuts").replaceChildren(
+      ...(recent.length ? recent : EXAMPLES).map((question) => {
+        const chip = template.cloneNode(true);
+        chip.textContent = question;
+        chip.addEventListener("click", () => ask(question));
+        return chip;
+      }),
+    );
+  }
+
+  // Returns null for trains too far away for a countdown to be useful. The
+  // answer to a "next train" question always gets one, however far away.
+  function describeDeparture(departsAt, always) {
+    const seconds = departsAt - Date.now() / 1000;
+    if (seconds < -3600 || (!always && seconds > 3 * 3600)) return null;
+    if (seconds < 0) {
+      return { text: `Left ${Math.ceil(-seconds / 60)} min ago`, departed: true };
+    }
+    // Round down: better to think there is less time than there is.
+    const minutes = Math.floor(seconds / 60);
+    if (minutes === 0) return { text: "Leaving now", departed: false };
+    const parts = [];
+    if (minutes >= 60) parts.push(`${Math.floor(minutes / 60)} h`);
+    if (minutes % 60) parts.push(`${minutes % 60} min`);
+    return { text: `In ${parts.join(" ")}`, departed: false };
+  }
+
+  function refreshCountdowns() {
+    let nextFound = false;
+    const always = trainList.hasAttribute("data-always-countdown");
+    for (const item of trainList.children) {
+      const departure = describeDeparture(Number(item.dataset.departsAt), always);
+      const departed = Boolean(departure && departure.departed);
+      const next = Boolean(departure && !departed && !nextFound);
+      nextFound = nextFound || next;
+      const label = item.querySelector("[data-role=countdown]");
+      label.hidden = !departure;
+      label.textContent = departure ? departure.text : "";
+      label.toggleAttribute("data-next", next);
+      item.toggleAttribute("data-next", next);
+      item.toggleAttribute("data-departed", departed);
+    }
+  }
+
+  function renderTrain(train) {
+    const item = $("train-template").content.firstElementChild.cloneNode(true);
+    item.dataset.departsAt = train.departs_at;
+    item.querySelector("[data-role=departs]").textContent = train.departs;
+    item.querySelector("[data-role=arrives]").textContent = train.arrives;
+    item.querySelector("[data-role=details]").textContent =
+      `${train.minutes} min · Train ${train.number} · ${train.service}`;
+    return item;
+  }
+
+  function render(data) {
+    const query = data.query;
+    $("summary").hidden = !query;
+    if (query) {
+      $("from").textContent = query.from;
+      $("to").textContent = query.to;
+      $("when").textContent = query.when;
+    }
+    trainList.toggleAttribute("data-always-countdown", Boolean(query && query.next));
+    $("notice").hidden = !data.message;
+    $("notice-text").textContent = data.message || "";
+    $("notice-hint").hidden = data.status !== "unsupported";
+    trainList.replaceChildren(...(data.trains || []).map(renderTrain));
+    refreshCountdowns();
+  }
+
+  function setBusy(value) {
+    busy = value;
+    button.disabled = value;
+    // An <svg> has no `hidden` property, only the attribute.
+    $("ask-spinner").toggleAttribute("hidden", !value);
+    $("ask-label").textContent = value ? "Finding trains…" : "Find trains";
+    answer.setAttribute("aria-busy", String(value));
+  }
+
+  async function fetchAnswer(question) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const headers = { "Content-Type": "application/json" };
+    const visitor = visitorId();
+    if (visitor) headers["X-Visitor-Id"] = visitor;
+    try {
+      const response = await fetch("api/ask", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ question }),
+        signal: controller.signal,
+      });
+      const data = await response.json();
+      if (!data || typeof data.status !== "string") throw new Error("Unexpected response");
+      return data;
+    } catch {
+      return { status: "error", message: OFFLINE_MESSAGE, query: null, trains: [] };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function ask(rawQuestion) {
+    const question = rawQuestion.trim();
+    if (busy) return;
+    if (!question) {
+      input.focus();
+      return;
+    }
+    input.value = question;
+    // Close the on-screen keyboard so the answer is visible.
+    input.blur();
+    setBusy(true);
+    const data = await fetchAnswer(question);
+    setBusy(false);
+    render(data);
+    // Only questions that found trains are worth a one-tap shortcut.
+    if (data.status === "trains" && data.trains.length) {
+      saveRecent(question);
+      renderShortcuts();
+    }
+  }
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    ask(input.value);
+  });
+  // Tapping the box selects the old question, so typing replaces it.
+  input.addEventListener("focus", () => input.select());
+  setInterval(refreshCountdowns, 15000);
+  document.addEventListener("visibilitychange", refreshCountdowns);
+  renderShortcuts();
+})();
+</script>
+</body>
+</html>

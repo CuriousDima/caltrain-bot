@@ -173,6 +173,7 @@ def test_helper_uses_reference_datetime_when_departure_time_is_missing(missing_t
         departure_station="san francisco",
         arrival_station="palo alto",
         departure_time=datetime.fromisoformat(REFERENCE_DATETIME),
+        departure_time_stated=False,
     )
 
 

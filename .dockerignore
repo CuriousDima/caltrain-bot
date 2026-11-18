@@ -9,5 +9,7 @@ __pycache__/
 *.py[cod]
 .DS_Store
 data/schedule.db
+data/usage.db*
 tests/
 .env
+node_modules

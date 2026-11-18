@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from telegram.constants import ChatAction
 
+from caltrain_bot.answers import ScheduleService
 from caltrain_bot.question_analysis import ScheduleQuestion
 from caltrain_bot.telegram_bot import (
     format_info_message,
@@ -59,9 +60,11 @@ def _run_get_trains_info(
         get_trains_info(
             update,  # type: ignore[arg-type]
             MagicMock(),
-            schedule_manager=schedule_manager,
-            schedule_helper=schedule_helper,
-            feed_end_date=feed_end_date,
+            service=ScheduleService(
+                schedule_manager=schedule_manager,
+                schedule_helper=schedule_helper,
+                feed_end_date=feed_end_date,
+            ),
         )
     )
     replies = [call.args[0] for call in message.reply_text.call_args_list]
@@ -84,6 +87,48 @@ def test_get_trains_info_queries_schedule_within_feed_dates():
 
     assert replies == ["No matching trains found."]
     schedule_manager.get_trains.assert_called_once()
+
+
+def test_get_trains_info_looks_up_the_next_trains_when_no_time_is_stated():
+    asked_at = datetime(2026, 8, 31, 8, 0)
+    message = SimpleNamespace(
+        text="Next train from Palo Alto to SF",
+        reply_text=AsyncMock(),
+        reply_chat_action=AsyncMock(),
+    )
+    schedule_manager = MagicMock()
+    schedule_manager.get_next_trains.return_value = []
+    schedule_helper = MagicMock()
+    schedule_helper.acall = AsyncMock(
+        return_value=ScheduleQuestion(
+            departure_station="palo alto",
+            arrival_station="san francisco",
+            departure_time=asked_at,
+            departure_time_stated=False,
+        )
+    )
+
+    asyncio.run(
+        get_trains_info(
+            SimpleNamespace(message=message),  # type: ignore[arg-type]
+            MagicMock(),
+            service=ScheduleService(
+                schedule_manager=schedule_manager,
+                schedule_helper=schedule_helper,
+                feed_end_date=date(2026, 8, 31),
+            ),
+        )
+    )
+
+    schedule_manager.get_next_trains.assert_called_once_with(
+        departure_station_query_name="palo alto",
+        arrival_station_query_name="san francisco",
+        after=asked_at,
+    )
+    schedule_manager.get_trains.assert_not_called()
+    message.reply_text.assert_awaited_once_with(
+        "No matching trains found.", parse_mode="HTML"
+    )
 
 
 def test_get_trains_info_shows_typing_instead_of_a_waiting_message():

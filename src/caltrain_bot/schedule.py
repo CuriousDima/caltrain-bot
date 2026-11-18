@@ -15,6 +15,8 @@ from sqlalchemy import text
 
 _CALTRAIN_TIMEZONE = ZoneInfo("America/Los_Angeles")
 FEED_EXPIRY_WARNING_DAYS = 14
+# How many departures a "next train" question gets.
+NEXT_TRAINS_LIMIT = 3
 
 
 @dataclass(frozen=True)
@@ -176,12 +178,58 @@ class ScheduleManager:
         arrival_station_query_name: str,
         departure_time: datetime,
     ) -> list[Train]:
-        """Returns a list of trains departing from the specified station and arriving at the specified station."""
+        """Returns the trains leaving within a window around ``departure_time``.
+
+        The window runs from 20 minutes before to 30 minutes after.
+        """
+        return self._query_trains(
+            """
+            AND origin_departure_timestamp BETWEEN datetime(:departure_time, '-20 minutes') AND datetime(:departure_time, '+30 minutes')
+            ORDER BY origin_departure_timestamp
+            """,
+            departure_station_query_name,
+            arrival_station_query_name,
+            departure_time,
+        )
+
+    def get_next_trains(
+        self,
+        departure_station_query_name: str,
+        arrival_station_query_name: str,
+        after: datetime,
+        limit: int = NEXT_TRAINS_LIMIT,
+    ) -> list[Train]:
+        """Returns the first ``limit`` trains leaving at or after ``after``.
+
+        Looks at most 24 hours ahead, so late at night it finds the first trains
+        of the next morning but never a train days away.
+        """
+        return self._query_trains(
+            """
+            AND origin_departure_timestamp >= datetime(:departure_time)
+            AND origin_departure_timestamp < datetime(:departure_time, '+1 day')
+            ORDER BY origin_departure_timestamp
+            LIMIT :limit
+            """,
+            departure_station_query_name,
+            arrival_station_query_name,
+            after,
+            limit=limit,
+        )
+
+    def _query_trains(
+        self,
+        time_filter_sql: str,
+        departure_station_query_name: str,
+        arrival_station_query_name: str,
+        departure_time: datetime,
+        **extra_params: int,
+    ) -> list[Train]:
         if departure_time.tzinfo is not None:
             departure_time = departure_time.astimezone(_CALTRAIN_TIMEZONE)
         gtfs_departure_time = departure_time.replace(tzinfo=None)
 
-        query_sql = """
+        query_sql = f"""
             SELECT
                 train_number,
                 service_pattern,
@@ -197,13 +245,13 @@ class ScheduleManager:
             FROM train_station_journeys
             WHERE origin_station_query_name = :departure_station_query_name
             AND destination_station_query_name = :arrival_station_query_name
-            AND origin_departure_timestamp BETWEEN datetime(:departure_time, '-20 minutes') AND datetime(:departure_time, '+30 minutes')
-            ORDER BY origin_departure_timestamp
+            {time_filter_sql.strip()}
         """
         params = {
             "departure_station_query_name": departure_station_query_name,
             "arrival_station_query_name": arrival_station_query_name,
             "departure_time": gtfs_departure_time.isoformat(sep=" "),
+            **extra_params,
         }
         logger.info(
             "Executing train query:\n{}\nWith params: {}", query_sql.strip(), params
