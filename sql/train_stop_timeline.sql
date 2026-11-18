@@ -262,33 +262,21 @@ SELECT
     unixepoch(ranked_stop_events.departure_timestamp) AS departure_unix
 FROM ranked_stop_events;
 
+-- One row per (service date, train, origin stop, later destination stop). This
+-- is millions of rows held in memory, so keep only the columns that
+-- ScheduleManager.get_trains() reads.
 CREATE TABLE train_station_journeys AS
 SELECT
-    origin_call.service_date,
     origin_call.train_number,
     origin_call.service_pattern,
-    origin_call.trip_headsign,
-    origin_call.direction_id,
-    origin_call.direction_name,
-    origin_call.trip_origin_station_id,
-    origin_call.trip_origin_station_name,
-    origin_call.trip_origin_station_query_name,
-    origin_call.trip_destination_station_id,
-    origin_call.trip_destination_station_name,
-    origin_call.trip_destination_station_query_name,
-    origin_call.trip_origin_departure_timestamp,
-    origin_call.trip_destination_arrival_timestamp,
-    origin_call.trip_duration_minutes,
     origin_call.station_id AS origin_station_id,
     origin_call.station_name AS origin_station_name,
     origin_call.station_query_name AS origin_station_query_name,
     origin_call.departure_timestamp AS origin_departure_timestamp,
-    origin_call.departure_unix AS origin_departure_unix,
     destination_call.station_id AS destination_station_id,
     destination_call.station_name AS destination_station_name,
     destination_call.station_query_name AS destination_station_query_name,
     destination_call.arrival_timestamp AS destination_arrival_timestamp,
-    destination_call.arrival_unix AS destination_arrival_unix,
     CAST(
         (
             destination_call.arrival_unix
@@ -301,3 +289,12 @@ JOIN train_stop_timeline AS destination_call
    AND destination_call.trip_id = origin_call.trip_id
    AND destination_call.stop_sequence > origin_call.stop_sequence
    AND destination_call.station_id <> origin_call.station_id;
+
+-- get_trains() filters on exactly these columns; without the index every
+-- lookup scans the whole table.
+CREATE INDEX idx_train_station_journeys_route_departure
+    ON train_station_journeys (
+        origin_station_query_name,
+        destination_station_query_name,
+        origin_departure_timestamp
+    );

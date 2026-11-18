@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import os
 from datetime import date, datetime
@@ -5,7 +6,9 @@ from html import escape
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
+from loguru import logger
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -115,6 +118,16 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _ = await update.message.reply_text(format_info_message(), parse_mode="HTML")
 
 
+async def _show_typing(update: Update) -> None:
+    """Show the "typing…" indicator; it is cosmetic, so failures are ignored."""
+    if not update.message:
+        return
+    try:
+        _ = await update.message.reply_chat_action(ChatAction.TYPING)
+    except Exception:
+        logger.debug("Could not send the typing indicator.")
+
+
 async def get_trains_info(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -127,14 +140,24 @@ async def get_trains_info(
     if not update.message.text:
         _ = await update.message.reply_text("Sorry, I can only process text messages.")
         return
-    _ = await update.message.reply_text(
-        "I am checking your question and looking up the train information now. Please give me a minute!"
-    )
     question = update.message.text
-    schedule_helper_result = schedule_helper(
-        question=question,
-        reference_datetime=datetime.now(ZoneInfo("America/Los_Angeles")).isoformat(),
-    )
+    reference_datetime = datetime.now(ZoneInfo("America/Los_Angeles")).isoformat()
+    try:
+        # The typing indicator goes out while the question is being analyzed, so
+        # it does not delay the answer.
+        _, schedule_helper_result = await asyncio.gather(
+            _show_typing(update),
+            schedule_helper.acall(
+                question=question, reference_datetime=reference_datetime
+            ),
+        )
+    except Exception:
+        logger.exception(f"Question analysis failed for: {question!r}")
+        _ = await update.message.reply_text(
+            "Sorry, I could not process your question right now. "
+            "Please try again in a moment."
+        )
+        return
     if isinstance(schedule_helper_result, UnsupportedQuestion):
         _ = await update.message.reply_text(
             "I can only help with Caltrain train schedules, routes, and stations."
@@ -167,7 +190,14 @@ def build_app():
         settings.llm, schedule_manager.stations
     )
 
-    app = ApplicationBuilder().token(settings.telegram_bot_token).build()
+    app = (
+        ApplicationBuilder()
+        .token(settings.telegram_bot_token)
+        # Handle each message as soon as it arrives instead of queueing behind
+        # another user's question.
+        .concurrent_updates(True)
+        .build()
+    )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("info", info))
     app.add_handler(

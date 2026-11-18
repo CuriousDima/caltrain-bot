@@ -9,6 +9,8 @@ class OpenRouterSettings:
 
     api_key: str
     model: str
+    fallback_model: str | None = None
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -28,10 +30,19 @@ def _require_env(name: str) -> str:
     return value.strip()
 
 
+def _optional_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return value.strip()
+
+
 def _load_llm_settings() -> OpenRouterSettings:
     return OpenRouterSettings(
         api_key=_require_env("OPENROUTER_API_KEY"),
         model=_require_env("OPENROUTER_MODEL"),
+        fallback_model=_optional_env("OPENROUTER_FALLBACK_MODEL"),
+        reasoning_effort=_optional_env("OPENROUTER_REASONING_EFFORT"),
     )
 
 
