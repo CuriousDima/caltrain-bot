@@ -17,10 +17,13 @@ class OpenRouterSettings:
 class Settings:
     """Configuration settings for the Caltrain Bot."""
 
-    telegram_bot_token: str
     gtfs_file_path: Path
     preprocessing_sql_path: Path
     llm: OpenRouterSettings
+    usage_db_path: Path
+    # Each frontend is switched on by its own variable; at least one is set.
+    telegram_bot_token: str | None = None
+    web_port: int | None = None
 
 
 def _require_env(name: str) -> str:
@@ -46,9 +49,32 @@ def _load_llm_settings() -> OpenRouterSettings:
     )
 
 
+def get_usage_db_path() -> Path:
+    """Where web usage statistics are stored; ``USAGE_DB_PATH`` overrides it."""
+    value = _optional_env("USAGE_DB_PATH")
+    if value is not None:
+        return Path(value)
+    return Path(__file__).parent.parent.parent / "data" / "usage.db"
+
+
+def _load_web_port() -> int | None:
+    value = _optional_env("WEB_PORT")
+    if value is None:
+        return None
+    if not value.isdecimal() or not 1 <= int(value) <= 65535:
+        raise ValueError("WEB_PORT must be a port number between 1 and 65535.")
+    return int(value)
+
+
 def load_settings() -> Settings:
     """Load settings from environment variables."""
-    telegram_bot_token = _require_env("TELEGRAM_BOT_TOKEN")
+    telegram_bot_token = _optional_env("TELEGRAM_BOT_TOKEN")
+    web_port = _load_web_port()
+    if telegram_bot_token is None and web_port is None:
+        raise ValueError(
+            "Set TELEGRAM_BOT_TOKEN to run the Telegram bot, WEB_PORT to serve "
+            "the web page, or both."
+        )
 
     gtfs_file_path: Path = (
         Path(__file__).parent.parent.parent / "data" / "caltrain-ca-us.zip"
@@ -65,8 +91,10 @@ def load_settings() -> Settings:
         )
 
     return Settings(
-        telegram_bot_token=telegram_bot_token,
         gtfs_file_path=gtfs_file_path,
         preprocessing_sql_path=preprocessing_sql_path,
         llm=_load_llm_settings(),
+        usage_db_path=get_usage_db_path(),
+        telegram_bot_token=telegram_bot_token,
+        web_port=web_port,
     )

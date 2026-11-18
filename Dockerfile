@@ -28,6 +28,7 @@ FROM python:3.11-slim-trixie AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=America/Los_Angeles \
+    USAGE_DB_PATH=/app/usage/usage.db \
     PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
@@ -44,7 +45,8 @@ COPY data/caltrain-ca-us.zip ./data/caltrain-ca-us.zip
 COPY data/schedule_question_program.json ./data/schedule_question_program.json
 COPY sql ./sql
 
-RUN chown -R app:app /app /home/app
+# /app/usage holds the web usage statistics; mount a volume there to keep them.
+RUN mkdir -p /app/usage && chown -R app:app /app /home/app
 
 USER app
 

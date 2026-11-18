@@ -36,6 +36,9 @@ class ScheduleQuestion:
     departure_station: str
     arrival_station: str
     departure_time: datetime
+    # False when the message gave no time ("next train"): departure_time is
+    # then the moment the question was asked.
+    departure_time_stated: bool = True
 
 
 QuestionAnalysisResult = UnsupportedQuestion | ScheduleQuestion
@@ -162,14 +165,11 @@ class CaltrainScheduleHelper(dspy.Module):
             return None
         return self._stations_by_normalized_name.get(self._normalize_station(value))
 
-    def _resolve_departure_time(
-        self, value: object, reference_datetime: str
-    ) -> datetime | None:
-        if value is None or (
+    @staticmethod
+    def _is_missing_time(value: object) -> bool:
+        return value is None or (
             isinstance(value, str) and value.strip().casefold() in _MISSING_TIME_VALUES
-        ):
-            value = reference_datetime
-        return self._parse_datetime(value)
+        )
 
     def _to_result(
         self, analysis: dspy.Prediction, question: str, reference_datetime: str
@@ -186,8 +186,10 @@ class CaltrainScheduleHelper(dspy.Module):
         arrival_station = self._canonical_station(
             getattr(analysis, "arrival_station", None)
         )
-        departure_time = self._resolve_departure_time(
-            getattr(analysis, "departure_time", None), reference_datetime
+        stated_time = getattr(analysis, "departure_time", None)
+        departure_time_stated = not self._is_missing_time(stated_time)
+        departure_time = self._parse_datetime(
+            stated_time if departure_time_stated else reference_datetime
         )
 
         if (
@@ -205,6 +207,7 @@ class CaltrainScheduleHelper(dspy.Module):
             departure_station=departure_station,
             arrival_station=arrival_station,
             departure_time=departure_time,
+            departure_time_stated=departure_time_stated,
         )
 
     def forward(self, question: str, reference_datetime: str) -> QuestionAnalysisResult:

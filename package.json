@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "description": "Build tooling for the web page's stylesheet; the bot itself is Python.",
+  "scripts": {
+    "build:css": "tailwindcss -i src/caltrain_bot/static/tailwind.css -o src/caltrain_bot/static/app.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.5",
+    "tailwindcss": "4.3.5"
+  }
+}

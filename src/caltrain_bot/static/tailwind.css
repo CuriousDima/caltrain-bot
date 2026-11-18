@@ -1,0 +1,4 @@
+/* Source for app.css. After changing classes in index.html, rebuild with:
+   npm install && npm run build:css */
+@import "tailwindcss" source(none);
+@source "./index.html";

@@ -80,3 +80,52 @@ def test_get_trains_normalizes_aware_datetimes_to_caltrain_wall_time(
         assert tuple(str(train.origin_departure_timestamp) for train in trains) == (
             expected_departures
         )
+
+
+def test_get_next_trains_returns_the_first_departures_after_a_time(schedule_manager):
+    # A Sunday at 6:05 PM: the next trains are too far apart for a time window.
+    after = datetime(2026, 8, 23, 18, 5, 30)
+
+    trains = schedule_manager.get_next_trains("palo alto", "san francisco", after)
+    in_window = schedule_manager.get_trains("palo alto", "san francisco", after)
+
+    departures = [str(train.origin_departure_timestamp) for train in trains]
+    assert len(departures) == 3
+    assert departures == sorted(departures)
+    assert all(departure >= "2026-08-23 18:05:30" for departure in departures)
+    upcoming_in_window = [
+        train
+        for train in in_window
+        if str(train.origin_departure_timestamp) >= "2026-08-23 18:05:30"
+    ]
+    assert len(upcoming_in_window) < 3
+
+
+def test_get_next_trains_skips_a_train_that_just_left(schedule_manager):
+    first, second = schedule_manager.get_next_trains(
+        "palo alto", "san francisco", datetime(2026, 8, 24, 17, 0), limit=2
+    )
+    just_after_first = datetime.fromisoformat(str(first.origin_departure_timestamp))
+
+    trains = schedule_manager.get_next_trains(
+        "palo alto",
+        "san francisco",
+        just_after_first.replace(second=1, tzinfo=ZoneInfo("America/Los_Angeles")),
+        limit=1,
+    )
+
+    assert [train.train_number for train in trains] == [second.train_number]
+
+
+def test_get_next_trains_finds_the_first_morning_trains_late_at_night(
+    schedule_manager,
+):
+    trains = schedule_manager.get_next_trains(
+        "gilroy", "san jose diridon", datetime(2026, 8, 24, 23, 0)
+    )
+
+    assert trains
+    assert all(
+        str(train.origin_departure_timestamp).startswith("2026-08-25")
+        for train in trains
+    )

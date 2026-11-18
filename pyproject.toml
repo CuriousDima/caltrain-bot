@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 caltrain-bot = "caltrain_bot:main"
+caltrain-bot-usage = "caltrain_bot.usage:main"
 
 [build-system]
 requires = ["uv_build>=0.10.10,<0.11.0"]
