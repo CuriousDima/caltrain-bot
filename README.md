@@ -97,11 +97,51 @@ is one tap.
   response, so it loads in one round trip on a weak signal.
 - `POST /api/ask` takes `{"question": "..."}` and returns JSON with the
   understood route and the trains.
-- Each question is one paid LLM call, so the endpoint allows 12 questions per
-  minute per client and 120 per minute in total. Behind a reverse proxy, make
-  sure it sets `X-Forwarded-For`; the last entry identifies the client.
+- Each question is one paid LLM call, so the endpoint limits how many it
+  answers; see [Security](#security).
 - The server speaks plain HTTP. Put it behind a reverse proxy or tunnel that
   terminates HTTPS before exposing it to the internet.
+
+### Security
+
+The web server assumes that only a trusted reverse proxy can connect to its
+port, for example a Cloudflare Tunnel: run `cloudflared` on a private Docker
+network with the bot and do not publish the port. The proxy must terminate
+HTTPS and pass the visitor's `Host` header through unchanged, which a
+Cloudflare Tunnel does unless `httpHostHeader` is set. Anyone who can connect
+to the port directly can forge the headers that identify a visitor, and is
+then held back only by the total limits.
+
+- **Question limits.** 12 questions per minute per client, 120 per minute and
+  3000 per day in total, and 8 questions in progress at once. The day is the
+  Caltrain calendar day; the count lives in memory, so a restart resets it.
+  Over a limit the endpoint answers `429` (or `503` when all 8 slots are busy)
+  without calling the LLM. An answer that takes more than 30 seconds is given
+  up. Questions are capped at 300 characters and request bodies at 8 KB.
+- **Who a client is.** The address in `CF-Connecting-IP`, which Cloudflare sets
+  itself; without it, the last `X-Forwarded-For` entry; without that, the
+  socket peer. IPv6 addresses are counted per /64 network, because one home or
+  phone has a whole /64 to pick addresses from.
+- **Requests from other websites.** A `POST` under `/api/` must have
+  `Content-Type: application/json`, which a browser cannot send across sites
+  without a CORS preflight that the server never approves (`415` otherwise).
+  It is refused with `403` when `Sec-Fetch-Site` is anything but `same-origin`
+  or `none`, or when the host in `Origin` differs from the `Host` header.
+  Clients that send neither header, such as `curl`, are allowed.
+- **Response headers.** Every response, error pages included, carries
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`,
+  `Cross-Origin-Resource-Policy: same-origin`, a `Permissions-Policy` that
+  switches off every device feature, and
+  `Strict-Transport-Security: max-age=31536000; includeSubDomains`. The page
+  has a hash-based `Content-Security-Policy`; everything else gets
+  `default-src 'none'; frame-ancestors 'none'` and `Cache-Control: no-store`.
+  The `Server` header is removed.
+- **Errors.** An unexpected failure is logged and answered with a generic
+  `500` JSON error; no exception text reaches the client.
+
+These protections cover the web page only. The Telegram bot has no rate limit
+of its own.
 
 ### Usage statistics
 
@@ -225,7 +265,9 @@ docker run -d \
 
 To serve the web page as well, add `WEB_PORT=8080` to the env file and publish
 the port with `-p 8080:8080`. The Telegram bot and the web page then share the
-one in-memory schedule.
+one in-memory schedule. To put the page on the public internet, do not publish
+the port; let a tunnel or reverse proxy on the same Docker network reach it
+instead (see [Security](#security)).
 
 The image keeps usage statistics in `/app/usage`. Mount a volume there with
 `-v caltrain-bot-usage:/app/usage`, or they are lost when the container is
@@ -240,7 +282,7 @@ docker exec caltrain-bot caltrain-bot-usage
 - `src/caltrain_bot/__init__.py`: CLI entrypoint that starts the Telegram bot, the web server, or both.
 - `src/caltrain_bot/answers.py`: Frontend-independent flow that turns a question into trains or a user-facing message.
 - `src/caltrain_bot/telegram_bot.py`: Telegram bot handlers and user-facing message formatting.
-- `src/caltrain_bot/web.py`: Web server: the page, the `/api/ask` JSON endpoint, and rate limiting.
+- `src/caltrain_bot/web.py`: Web server: the page, the `/api/ask` JSON endpoint, rate limiting, and the security middlewares.
 - `src/caltrain_bot/usage.py`: Usage statistics for the web page and the `caltrain-bot-usage` report command.
 - `src/caltrain_bot/static/`: The web page (`index.html`), its Tailwind source (`tailwind.css`), and the generated `app.css`.
 - `src/caltrain_bot/question_analysis.py`: DSPy program that classifies a question and extracts stations and time in a single LLM call.
