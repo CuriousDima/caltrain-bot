@@ -92,7 +92,6 @@
   ];
   const RECENT_KEY = "caltrain-recent-questions";
   const MAX_RECENT = 4;
-  const VISITOR_KEY = "caltrain-visitor";
   const REQUEST_TIMEOUT_MS = 30000;
   const OFFLINE_MESSAGE = "Could not reach the server. Check your connection and try again.";
   const SERVER_MESSAGE = "Something went wrong on our side. Try again in a moment.";
@@ -122,47 +121,6 @@
       localStorage.setItem(RECENT_KEY, JSON.stringify(recent.slice(0, MAX_RECENT)));
     } catch {
       // Private browsing: the page works the same without the shortcuts.
-    }
-  }
-
-  // A random ID with no personal data, sent when the page opens and with each
-  // question so the server can count how many people use the page. This is
-  // its only use.
-  function visitorId() {
-    try {
-      let id = localStorage.getItem(VISITOR_KEY);
-      if (!/^[0-9a-f]{32}$/.test(id || "")) {
-        const bytes = crypto.getRandomValues(new Uint8Array(16));
-        id = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-        localStorage.setItem(VISITOR_KEY, id);
-      }
-      return id;
-    } catch {
-      return null;
-    }
-  }
-
-  // Tells the server the page was opened. Besides the random ID it sends only
-  // the host name of the site that linked here, never the full address.
-  function reportVisit() {
-    let referrer = "";
-    try {
-      referrer = new URL(document.referrer).hostname;
-    } catch {
-      // Opened directly: there is no referring site.
-    }
-    const headers = { "Content-Type": "application/json" };
-    const visitor = visitorId();
-    if (visitor) headers["X-Visitor-Id"] = visitor;
-    try {
-      fetch("api/visit", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ referrer }),
-        keepalive: true,
-      }).catch(() => {});
-    } catch {
-      // Counting visits must never get in the way of the page.
     }
   }
 
@@ -253,8 +211,6 @@
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     const headers = { "Content-Type": "application/json" };
-    const visitor = visitorId();
-    if (visitor) headers["X-Visitor-Id"] = visitor;
     let reached = false;
     try {
       const response = await fetch("api/ask", {
@@ -309,7 +265,12 @@
   setInterval(refreshCountdowns, 15000);
   document.addEventListener("visibilitychange", refreshCountdowns);
   renderShortcuts();
-  reportVisit();
+  try {
+    // Earlier versions kept a random visitor ID here; nothing uses it now.
+    localStorage.removeItem("caltrain-visitor");
+  } catch {
+    // Storage is switched off: there is nothing to remove.
+  }
 })();
 </script>
 </body>

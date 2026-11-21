@@ -27,13 +27,6 @@ from caltrain_bot.answers import (
 )
 from caltrain_bot.question_analysis import CALTRAIN_TIMEZONE
 from caltrain_bot.schedule import Train
-from caltrain_bot.usage import (
-    UsageLog,
-    classify_device,
-    normalize_country,
-    normalize_referrer,
-    normalize_visitor_id,
-)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -49,9 +42,6 @@ QUESTIONS_PER_DAY_PER_CLIENT = 300
 MAX_CONCURRENT_QUESTIONS = 8
 # The page stops waiting after 30 seconds, so a slower answer helps nobody.
 ANSWER_TIMEOUT_SECONDS = 30
-# Every recorded visit is one disk write, so cap how fast anyone can add them.
-VISITS_PER_MINUTE_PER_CLIENT = 30
-VISITS_PER_MINUTE_TOTAL = 600
 
 EMPTY_QUESTION_MESSAGE = "Type a question first."
 QUESTION_TOO_LONG_MESSAGE = "That question is too long. Keep it short."
@@ -113,6 +103,11 @@ _SECURITY_HEADERS = {
 _DEFAULT_CSP = "default-src 'none'; frame-ancestors 'none'"
 NO_TRAINS_MESSAGE = "No trains leave around that time. Try a different time."
 NO_NEXT_TRAINS_MESSAGE = "No trains leave in the next 24 hours."
+
+# Cloudflare Web Analytics: Cloudflare adds its script to the page on the way
+# out and the script reports back to Cloudflare. The page itself counts nothing.
+CLOUDFLARE_ANALYTICS_SCRIPT = "https://static.cloudflareinsights.com"
+CLOUDFLARE_ANALYTICS_ENDPOINT = "https://cloudflareinsights.com"
 
 _STYLESHEET_LINK = '<link rel="stylesheet" href="app.css">'
 _INLINE_SCRIPT = re.compile(r"<script>(.*?)</script>", re.DOTALL)
@@ -205,8 +200,8 @@ def render_page() -> tuple[str, str]:
         (
             "default-src 'none'",
             f"style-src {_csp_hash(css)}",
-            f"script-src {scripts}",
-            "connect-src 'self'",
+            f"script-src {scripts} {CLOUDFLARE_ANALYTICS_SCRIPT}",
+            f"connect-src 'self' {CLOUDFLARE_ANALYTICS_ENDPOINT}",
             "img-src data:",
             "base-uri 'none'",
             "form-action 'none'",
@@ -448,15 +443,7 @@ async def _remove_server_header(
     response.headers.popall("Server", None)
 
 
-def _usage_status(answer: Answer) -> str:
-    if answer.status == "trains" and not answer.trains:
-        return "no_trains"
-    return answer.status
-
-
-def build_web_app(
-    service: ScheduleService, usage_log: UsageLog | None = None
-) -> web.Application:
+def build_web_app(service: ScheduleService) -> web.Application:
     html, csp = render_page()
     # security_headers_middleware adds the headers every response shares.
     page_headers = {
@@ -494,7 +481,6 @@ def build_web_app(
         if not llm_slots.try_acquire():
             return _error(BUSY_MESSAGE, 503, headers={"Retry-After": "5"})
 
-        started = time.monotonic()
         try:
             # Checked last, so the daily caps count only questions that
             # really reach the LLM.
@@ -509,46 +495,13 @@ def build_web_app(
             answer = Answer(status="error", message=ANALYSIS_FAILED_MESSAGE)
         finally:
             llm_slots.release()
-        if usage_log is not None:
-            usage_log.record_question(
-                visitor=normalize_visitor_id(request.headers.get("X-Visitor-Id")),
-                status=_usage_status(answer),
-                duration_ms=round((time.monotonic() - started) * 1000),
-            )
         today = datetime.now(CALTRAIN_TIMEZONE).date()
         return web.json_response(answer_to_json(answer, today))
-
-    visit_client_limiter = RateLimiter(VISITS_PER_MINUTE_PER_CLIENT)
-    visit_total_limiter = RateLimiter(VISITS_PER_MINUTE_TOTAL)
-
-    async def visit(request: web.Request) -> web.Response:
-        """Count one page view. Always 204: the page ignores the answer."""
-        no_content = web.Response(status=204)
-        if (
-            usage_log is None
-            or not visit_client_limiter.allow(_client_key(request))
-            or not visit_total_limiter.allow("all")
-        ):
-            return no_content
-        try:
-            payload = await request.json()
-        except (ValueError, RecursionError, web.HTTPRequestEntityTooLarge):
-            return no_content
-        if not isinstance(payload, dict):
-            return no_content
-        usage_log.record_visit(
-            visitor=normalize_visitor_id(request.headers.get("X-Visitor-Id")),
-            country=normalize_country(request.headers.get("CF-IPCountry")),
-            device=classify_device(request.headers.get("User-Agent")),
-            referrer=normalize_referrer(payload.get("referrer"), request.host),
-        )
-        return no_content
 
     app = web.Application(client_max_size=8 * 1024, middlewares=MIDDLEWARES)
     app.on_response_prepare.append(_remove_server_header)
     app.router.add_get("/", index)
     app.router.add_post("/api/ask", ask)
-    app.router.add_post("/api/visit", visit)
     return app
 
 
