@@ -281,6 +281,8 @@
     input.value = question;
     // Close the on-screen keyboard so the answer is visible.
     input.blur();
+    // A shortcut tapped below a long answer: go back up to the new answer.
+    if (form.getBoundingClientRect().top < 0) scrollTo(0, 0);
     setBusy(true);
     const data = await fetchAnswer(question);
     setBusy(false);
