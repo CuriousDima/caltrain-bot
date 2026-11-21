@@ -17,7 +17,12 @@ from telegram.ext import (
 )
 
 from caltrain_bot.answers import ScheduleService, answer_question
-from caltrain_bot.limits import ConcurrencyLimiter, DailyLimiter, RateLimiter
+from caltrain_bot.limits import (
+    ConcurrencyLimiter,
+    DailyLimiter,
+    RateLimiter,
+    allow_within_total,
+)
 from caltrain_bot.schedule import Train
 
 
@@ -29,6 +34,10 @@ QUESTIONS_PER_DAY_PER_USER = 300
 QUESTIONS_PER_DAY_TOTAL = 30_000
 # Questions waiting on the LLM at once; more are turned away, never queued.
 MAX_CONCURRENT_QUESTIONS = 8
+# Replies that turn a message away, per user. Further refused messages get
+# silence: Telegram limits how fast a bot may send, and a script that floods
+# the bot would use up what other riders' answers need.
+REFUSALS_PER_MINUTE_PER_USER = 3
 
 TEXT_ONLY_MESSAGE = "Sorry, I can only process text messages."
 QUESTION_TOO_LONG_MESSAGE = "That question is too long. Please keep it short."
@@ -61,13 +70,16 @@ class QuestionLimits:
     llm_slots: ConcurrencyLimiter = field(
         default_factory=lambda: ConcurrencyLimiter(MAX_CONCURRENT_QUESTIONS)
     )
+    refusal_replies: RateLimiter = field(
+        default_factory=lambda: RateLimiter(REFUSALS_PER_MINUTE_PER_USER)
+    )
 
     def refusal(self, user: str) -> str | None:
         """Why this question is not answered, or None after reserving a slot.
 
         The caller must release ``llm_slots`` when None is returned.
         """
-        if not self.user_minute.allow(user) or not self.total_minute.allow("all"):
+        if not allow_within_total(self.user_minute, self.total_minute, user):
             return RATE_LIMITED_MESSAGE
         if not self.llm_slots.try_acquire():
             return BUSY_MESSAGE
@@ -200,12 +212,14 @@ async def get_trains_info(
         _ = await update.message.reply_text(TEXT_ONLY_MESSAGE)
         return
     question = " ".join(update.message.text.split())
+    user = _user_key(update)
     if len(question) > MAX_QUESTION_LENGTH:
-        _ = await update.message.reply_text(QUESTION_TOO_LONG_MESSAGE)
-        return
-    refusal = limits.refusal(_user_key(update))
+        refusal = QUESTION_TOO_LONG_MESSAGE
+    else:
+        refusal = limits.refusal(user)
     if refusal is not None:
-        _ = await update.message.reply_text(refusal)
+        if limits.refusal_replies.allow(user):
+            _ = await update.message.reply_text(refusal)
         return
     try:
         # The typing indicator goes out while the question is being analyzed,

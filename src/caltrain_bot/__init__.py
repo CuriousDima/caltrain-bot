@@ -1,3 +1,4 @@
+import logging
 import sys
 
 from aiohttp.web import AppRunner, run_app
@@ -11,11 +12,28 @@ from caltrain_bot.telegram_bot import build_app
 from caltrain_bot.web import build_web_app, start_web_server
 
 
+class _WithoutTraceback(logging.Filter):
+    """Lets a log record through as one line, without its traceback."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.exc_info = None
+        record.exc_text = None
+        return True
+
+
+_WITHOUT_TRACEBACK = _WithoutTraceback()
+
+
 def configure_logging() -> None:
     # loguru's default prints every local variable in a traceback, which puts
     # riders' questions (and whatever else is in scope) into the logs.
     logger.remove()
     logger.add(sys.stderr, diagnose=False)
+    # aiohttp answers a malformed request by itself and logs the parser's
+    # whole traceback for it. Anyone can send those as fast as they like, so
+    # one line each is enough. Errors in our own handlers never get this far:
+    # security_headers_middleware logs them in full.
+    logging.getLogger("aiohttp.server").addFilter(_WITHOUT_TRACEBACK)
 
 
 def main() -> None:

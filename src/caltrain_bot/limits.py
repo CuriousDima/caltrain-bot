@@ -15,6 +15,18 @@ class RateLimiter:
         self._window_seconds = window_seconds
         self._events: dict[str, deque[float]] = {}
 
+    def has_room(self, key: str, now: float | None = None) -> bool:
+        """Whether ``allow(key)`` would succeed. Records nothing."""
+        if now is None:
+            now = time.monotonic()
+        events = self._events.get(key)
+        if events is None:
+            return True
+        cutoff = now - self._window_seconds
+        while events and events[0] <= cutoff:
+            events.popleft()
+        return len(events) < self._limit
+
     def allow(self, key: str, now: float | None = None) -> bool:
         if now is None:
             now = time.monotonic()
@@ -24,13 +36,25 @@ class RateLimiter:
             k for k, v in self._events.items() if not v or v[-1] <= cutoff
         ]:
             del self._events[stale_key]
-        events = self._events.setdefault(key, deque())
-        while events and events[0] <= cutoff:
-            events.popleft()
-        if len(events) >= self._limit:
+        if not self.has_room(key, now):
             return False
-        events.append(now)
+        self._events.setdefault(key, deque()).append(now)
         return True
+
+
+def allow_within_total(
+    client_limiter: RateLimiter, total_limiter: RateLimiter, client: str
+) -> bool:
+    """Count one event against ``client``'s limit and against the total.
+
+    The client is recorded only after the total limit has let the event
+    through. A flood from many addresses is turned away by the total limit, so
+    it leaves nothing in the per-client table, which ``allow()`` walks through
+    on every call. A client over its own limit does not use up the total.
+    """
+    if not client_limiter.has_room(client) or not total_limiter.allow("all"):
+        return False
+    return client_limiter.allow(client)
 
 
 class DailyLimiter:

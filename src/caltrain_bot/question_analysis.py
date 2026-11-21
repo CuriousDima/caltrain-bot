@@ -157,8 +157,13 @@ class CaltrainScheduleHelper(dspy.Module):
             return None
         # The model answers in Caltrain wall time without a UTC offset.
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=CALTRAIN_TIMEZONE)
-        return parsed
+            return parsed.replace(tzinfo=CALTRAIN_TIMEZONE)
+        try:
+            return parsed.astimezone(CALTRAIN_TIMEZONE)
+        except OverflowError:
+            # Year 1 or 9999 with an offset that pushes the time out of range.
+            # A rider cannot mean it; a prompt injection can produce it.
+            return None
 
     def _canonical_station(self, value: object) -> str | None:
         if not isinstance(value, str):
