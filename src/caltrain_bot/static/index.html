@@ -3,26 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Ask a Caltrain schedule question in plain English and get the next trains.">
+<meta name="description" content="Type where you are going, like “Palo Alto to SF at 5pm”, and get the next Caltrain trains with a live countdown. Free, no app to install. Unofficial.">
+<meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#fafaf9" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0c0a09" media="(prefers-color-scheme: dark)">
-<title>Caltrain schedule</title>
+<meta name="apple-mobile-web-app-title" content="Caltrain">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://caltrain.help/">
+<meta property="og:title" content="Caltrain schedule: ask in plain English">
+<meta property="og:description" content="Type “Palo Alto to SF at 5pm” and get the next trains with a live countdown. Free, unofficial.">
+<meta name="twitter:card" content="summary">
+<title>Caltrain schedule: next trains between any two stations</title>
+<link rel="canonical" href="https://caltrain.help/">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9A%86%3C/text%3E%3C/svg%3E">
 <!-- The server inlines app.css in place of this tag. Rebuild it after changing
      any class below; see "Web interface" in README.md. -->
 <link rel="stylesheet" href="app.css">
 </head>
 <body class="bg-stone-50 text-stone-900 antialiased dark:bg-stone-950 dark:text-stone-100">
-<main class="mx-auto flex min-h-dvh max-w-md flex-col px-4 pt-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+<main class="mx-auto flex min-h-dvh max-w-md flex-col px-4 pt-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:pt-12">
   <h1 class="text-2xl font-bold tracking-tight">Caltrain schedule</h1>
 
   <form id="ask-form" class="mt-3" novalidate>
     <label for="question" class="block text-base text-stone-600 dark:text-stone-400">Where from, where to, and when?</label>
     <input id="question" name="question" type="text" maxlength="300" required autofocus
-           autocomplete="off" enterkeyhint="search" placeholder="Palo Alto to SF at 5pm"
-           class="mt-2 h-14 w-full rounded-2xl border border-stone-300 bg-white px-4 text-lg text-stone-900 placeholder:text-stone-400 focus:border-red-600 focus:outline-2 focus:outline-offset-0 focus:outline-red-600/30 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 dark:placeholder:text-stone-500">
+           autocomplete="off" spellcheck="false" enterkeyhint="search" placeholder="Palo Alto to SF at 5pm"
+           class="mt-2 h-14 w-full rounded-2xl border border-stone-300 bg-white px-4 text-lg text-stone-900 placeholder:text-stone-500 focus:border-red-600 focus:outline-2 focus:outline-offset-0 focus:outline-red-600/30 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 dark:placeholder:text-stone-400">
     <button id="ask-button" type="submit"
-            class="mt-3 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 text-lg font-semibold text-white active:bg-red-700 disabled:opacity-70">
+            class="mt-3 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 text-lg font-semibold text-white enabled:cursor-pointer enabled:hover:bg-red-700 active:bg-red-700 disabled:opacity-70">
       <svg id="ask-spinner" hidden class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" class="opacity-30"></circle>
         <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
@@ -34,9 +42,9 @@
   <section id="answer" aria-live="polite" class="transition-opacity aria-busy:opacity-40">
     <div id="summary" hidden class="mt-6">
       <h2 class="text-xl leading-tight font-semibold">
-        <span id="from"></span>
+        <span id="from" class="whitespace-nowrap"></span>
         <span aria-hidden="true" class="text-stone-400">→</span><span class="sr-only">to</span>
-        <span id="to"></span>
+        <span id="to" class="whitespace-nowrap"></span>
       </h2>
       <p id="when" class="mt-1 text-sm text-stone-600 dark:text-stone-400"></p>
     </div>
@@ -59,7 +67,7 @@
 
 <template id="train-template">
   <li class="rounded-2xl border border-stone-200 bg-white p-4 data-departed:opacity-55 data-next:border-red-500 data-next:ring-1 data-next:ring-red-500 dark:border-stone-800 dark:bg-stone-900">
-    <p data-role="countdown" hidden class="mb-1 text-sm font-semibold text-stone-500 data-next:text-red-600 dark:text-stone-400 dark:data-next:text-red-400"></p>
+    <p data-role="countdown" hidden class="mb-1 text-sm font-semibold text-stone-500 data-next:text-base data-next:text-red-600 dark:text-stone-400 dark:data-next:text-red-400"></p>
     <p class="text-2xl font-bold tabular-nums">
       <span data-role="departs"></span>
       <span aria-hidden="true" class="font-normal text-stone-400">→</span><span class="sr-only">arrives</span>
@@ -70,7 +78,7 @@
 </template>
 
 <template id="shortcut-template">
-  <button type="button" class="min-h-11 rounded-full border border-stone-300 bg-white px-4 text-left text-sm text-stone-800 active:bg-stone-100 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:active:bg-stone-800"></button>
+  <button type="button" class="min-h-11 max-w-full truncate rounded-full border border-stone-300 bg-white px-4 text-left text-sm text-stone-800 cursor-pointer hover:bg-stone-100 active:bg-stone-100 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800 dark:active:bg-stone-800"></button>
 </template>
 
 <script>
@@ -87,6 +95,7 @@
   const VISITOR_KEY = "caltrain-visitor";
   const REQUEST_TIMEOUT_MS = 30000;
   const OFFLINE_MESSAGE = "Could not reach the server. Check your connection and try again.";
+  const SERVER_MESSAGE = "Something went wrong on our side. Try again in a moment.";
 
   const $ = (id) => document.getElementById(id);
   const form = $("ask-form");
@@ -116,8 +125,9 @@
     }
   }
 
-  // A random ID with no personal data, sent with each question so the server
-  // can count how many people use the page. This is its only use.
+  // A random ID with no personal data, sent when the page opens and with each
+  // question so the server can count how many people use the page. This is
+  // its only use.
   function visitorId() {
     try {
       let id = localStorage.getItem(VISITOR_KEY);
@@ -129,6 +139,30 @@
       return id;
     } catch {
       return null;
+    }
+  }
+
+  // Tells the server the page was opened. Besides the random ID it sends only
+  // the host name of the site that linked here, never the full address.
+  function reportVisit() {
+    let referrer = "";
+    try {
+      referrer = new URL(document.referrer).hostname;
+    } catch {
+      // Opened directly: there is no referring site.
+    }
+    const headers = { "Content-Type": "application/json" };
+    const visitor = visitorId();
+    if (visitor) headers["X-Visitor-Id"] = visitor;
+    try {
+      fetch("api/visit", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ referrer }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      // Counting visits must never get in the way of the page.
     }
   }
 
@@ -221,6 +255,7 @@
     const headers = { "Content-Type": "application/json" };
     const visitor = visitorId();
     if (visitor) headers["X-Visitor-Id"] = visitor;
+    let reached = false;
     try {
       const response = await fetch("api/ask", {
         method: "POST",
@@ -228,11 +263,15 @@
         body: JSON.stringify({ question }),
         signal: controller.signal,
       });
+      reached = true;
       const data = await response.json();
       if (!data || typeof data.status !== "string") throw new Error("Unexpected response");
       return data;
     } catch {
-      return { status: "error", message: OFFLINE_MESSAGE, query: null, trains: [] };
+      // A reply we cannot read (a proxy error page during a restart, say) is
+      // not the rider's connection.
+      const message = reached ? SERVER_MESSAGE : OFFLINE_MESSAGE;
+      return { status: "error", message, query: null, trains: [] };
     } finally {
       clearTimeout(timer);
     }
@@ -248,6 +287,8 @@
     input.value = question;
     // Close the on-screen keyboard so the answer is visible.
     input.blur();
+    // A shortcut tapped below a long answer: go back up to the new answer.
+    if (form.getBoundingClientRect().top < 0) scrollTo(0, 0);
     setBusy(true);
     const data = await fetchAnswer(question);
     setBusy(false);
@@ -268,6 +309,7 @@
   setInterval(refreshCountdowns, 15000);
   document.addEventListener("visibilitychange", refreshCountdowns);
   renderShortcuts();
+  reportVisit();
 })();
 </script>
 </body>

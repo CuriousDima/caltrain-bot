@@ -1,22 +1,39 @@
 """Mobile web frontend: one HTML page and one JSON endpoint."""
 
+import asyncio
 import base64
 import hashlib
+import ipaddress
+import json
 import re
 import time
 from collections import deque
+from collections.abc import MutableMapping
 from datetime import date, datetime
 from pathlib import Path
 from string import capwords
 from typing import Any
+from urllib.parse import urlsplit
 
 from aiohttp import web
+from aiohttp.typedefs import Handler
 from loguru import logger
 
-from caltrain_bot.answers import Answer, ScheduleService, answer_question
+from caltrain_bot.answers import (
+    ANALYSIS_FAILED_MESSAGE,
+    Answer,
+    ScheduleService,
+    answer_question,
+)
 from caltrain_bot.question_analysis import CALTRAIN_TIMEZONE
 from caltrain_bot.schedule import Train
-from caltrain_bot.usage import UsageLog, normalize_visitor_id
+from caltrain_bot.usage import (
+    UsageLog,
+    classify_device,
+    normalize_country,
+    normalize_referrer,
+    normalize_visitor_id,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -24,10 +41,76 @@ MAX_QUESTION_LENGTH = 300
 # Every question costs one paid LLM call, so cap how fast anyone can ask.
 QUESTIONS_PER_MINUTE_PER_CLIENT = 12
 QUESTIONS_PER_MINUTE_TOTAL = 120
+# The bill for a day stays bounded even when the abuse comes from many clients.
+QUESTIONS_PER_DAY_TOTAL = 3000
+# One client cannot use up the whole day's budget and lock everyone else out.
+QUESTIONS_PER_DAY_PER_CLIENT = 300
+# Questions waiting on the LLM at once; more are turned away, never queued.
+MAX_CONCURRENT_QUESTIONS = 8
+# The page stops waiting after 30 seconds, so a slower answer helps nobody.
+ANSWER_TIMEOUT_SECONDS = 30
+# Every recorded visit is one disk write, so cap how fast anyone can add them.
+VISITS_PER_MINUTE_PER_CLIENT = 30
+VISITS_PER_MINUTE_TOTAL = 600
 
 EMPTY_QUESTION_MESSAGE = "Type a question first."
 QUESTION_TOO_LONG_MESSAGE = "That question is too long. Keep it short."
 RATE_LIMITED_MESSAGE = "Too many questions right now. Try again in a minute."
+DAILY_LIMIT_MESSAGE = (
+    "This page has answered all the questions it can today. Try again tomorrow."
+)
+CLIENT_DAILY_LIMIT_MESSAGE = (
+    "You have asked a lot of questions today. Try again tomorrow."
+)
+BUSY_MESSAGE = "Lots of riders are asking right now. Try again in a few seconds."
+JSON_REQUIRED_MESSAGE = "Send the request as application/json."
+CROSS_SITE_MESSAGE = "This request must come from the Caltrain page itself."
+UNREADABLE_REQUEST_MESSAGE = "That request could not be read."
+INTERNAL_ERROR_MESSAGE = "Something went wrong on our side. Please try again."
+
+API_PATH_PREFIX = "/api/"
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# What a browser sends for the page's own requests and for typed-in addresses.
+_OWN_FETCH_SITES = frozenset({"same-origin", "none"})
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": ", ".join(
+        f"{feature}=()"
+        for feature in (
+            "accelerometer",
+            "autoplay",
+            "bluetooth",
+            "browsing-topics",
+            "camera",
+            "display-capture",
+            "encrypted-media",
+            "fullscreen",
+            "geolocation",
+            "gyroscope",
+            "hid",
+            "idle-detection",
+            "magnetometer",
+            "microphone",
+            "midi",
+            "payment",
+            "picture-in-picture",
+            "publickey-credentials-get",
+            "screen-wake-lock",
+            "serial",
+            "usb",
+            "xr-spatial-tracking",
+        )
+    ),
+    # Browsers honor this only over HTTPS, which the proxy in front provides.
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+}
+# For every response that is not the page: nothing in it may load or run.
+_DEFAULT_CSP = "default-src 'none'; frame-ancestors 'none'"
 NO_TRAINS_MESSAGE = "No trains leave around that time. Try a different time."
 NO_NEXT_TRAINS_MESSAGE = "No trains leave in the next 24 hours."
 
@@ -59,6 +142,46 @@ class RateLimiter:
             return False
         events.append(now)
         return True
+
+
+class DailyLimiter:
+    """Allows ``limit`` events per key per calendar day in Caltrain local time."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._day: date | None = None
+        self._counts: dict[str, int] = {}
+
+    def allow(self, key: str = "all", now: datetime | None = None) -> bool:
+        if now is None:
+            now = datetime.now(CALTRAIN_TIMEZONE)
+        day = now.astimezone(CALTRAIN_TIMEZONE).date()
+        if day != self._day:
+            # Yesterday's keys go too, so the table cannot grow without bound.
+            self._day = day
+            self._counts = {}
+        count = self._counts.get(key, 0)
+        if count >= self._limit:
+            return False
+        self._counts[key] = count + 1
+        return True
+
+
+class ConcurrencyLimiter:
+    """Admits ``limit`` callers at a time; the rest are refused, not queued."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._active = 0
+
+    def try_acquire(self) -> bool:
+        if self._active >= self._limit:
+            return False
+        self._active += 1
+        return True
+
+    def release(self) -> None:
+        self._active -= 1
 
 
 def _csp_hash(source: str) -> str:
@@ -157,19 +280,172 @@ def answer_to_json(answer: Answer, today: date) -> dict[str, Any]:
     }
 
 
-def _error(message: str, status: int) -> web.Response:
+def _error(
+    message: str, status: int, headers: dict[str, str] | None = None
+) -> web.Response:
     return web.json_response(
         {"status": "error", "message": message, "query": None, "trains": []},
         status=status,
+        headers=headers,
     )
 
 
+def _address_bucket(value: str | None) -> str | None:
+    """The rate-limit bucket of an IP address, or None when it is not one."""
+    if value is None:
+        return None
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        # One home or phone is handed a whole /64, so a limit per address
+        # would be bypassed by picking a new address for every request.
+        return f"{ipaddress.IPv6Address(int(address) >> 64 << 64)}/64"
+    return str(address)
+
+
 def _client_key(request: web.Request) -> str:
-    # Behind a reverse proxy the socket peer is the proxy; the address it saw
-    # is the last X-Forwarded-For entry. A direct client can forge the header,
-    # which is why there is a total limit as well.
+    # In production only the Cloudflare Tunnel can reach this port, so the
+    # socket peer is the tunnel and the visitor's address is whatever
+    # Cloudflare's edge reports: CF-Connecting-IP, which the edge overwrites
+    # on every request, or, behind another reverse proxy, the last
+    # X-Forwarded-For entry (the one that proxy appended). Anyone who can
+    # reach the port directly can forge both headers; the total limits bound
+    # the cost in that case.
     forwarded_for = request.headers.get("X-Forwarded-For", "")
-    return forwarded_for.rpartition(",")[2].strip() or request.remote or "unknown"
+    for candidate in (
+        request.headers.get("CF-Connecting-IP"),
+        forwarded_for.rpartition(",")[2],
+        request.remote,
+    ):
+        bucket = _address_bucket(candidate)
+        if bucket is not None:
+            return bucket
+    return request.remote or "unknown"
+
+
+def _is_own_origin(origin: str, host: str) -> bool:
+    # Only the host is compared: the proxy in front terminates HTTPS, so the
+    # page's origin is https:// while this server sees plain http://.
+    try:
+        origin_host = urlsplit(origin).netloc
+    except ValueError:
+        return False
+    return bool(host) and origin_host.lower() == host.lower()
+
+
+def reject_cross_site_request(request: web.Request) -> web.Response | None:
+    """Refuse an API call that did not come from the page this server serves.
+
+    Other websites can make a visitor's browser send "simple" POSTs (a form or
+    a ``text/plain`` fetch) without asking this server first. Browsers label
+    such requests with ``Sec-Fetch-Site`` and ``Origin``, and may only send
+    ``application/json`` across sites after a CORS preflight, which this
+    server never approves. Clients that send neither header (curl, old
+    browsers) are not riding on a visitor's browser and stay allowed.
+    """
+    fetch_site = request.headers.get("Sec-Fetch-Site")
+    if fetch_site is not None and fetch_site.lower() not in _OWN_FETCH_SITES:
+        return _error(CROSS_SITE_MESSAGE, 403)
+    origin = request.headers.get("Origin")
+    if origin is not None and not _is_own_origin(
+        origin, request.headers.get("Host", "")
+    ):
+        return _error(CROSS_SITE_MESSAGE, 403)
+    if request.content_type != "application/json":
+        return _error(JSON_REQUIRED_MESSAGE, 415)
+    return None
+
+
+def _set_security_headers(
+    request: web.Request, headers: MutableMapping[str, str]
+) -> None:
+    headers.update(_SECURITY_HEADERS)
+    # The page brings its own policy that allows its inline style and script.
+    headers.setdefault("Content-Security-Policy", _DEFAULT_CSP)
+    if request.path.startswith(API_PATH_PREFIX):
+        headers["Cache-Control"] = "no-store"
+    else:
+        headers.setdefault("Cache-Control", "no-store")
+
+
+@web.middleware
+async def security_headers_middleware(
+    request: web.Request, handler: Handler
+) -> web.StreamResponse:
+    """Put the security headers on every response, error responses included."""
+    try:
+        response = await handler(request)
+    except web.HTTPException as error:
+        # aiohttp's own answers, such as 404, 405 and 413.
+        _set_security_headers(request, error.headers)
+        raise
+    except web.RequestPayloadError:
+        # The body could not be read, for example broken compression.
+        response = _error(UNREADABLE_REQUEST_MESSAGE, 400)
+    except Exception:
+        # The details go to the log; the client learns nothing about them.
+        logger.exception(
+            "Unhandled error while serving {} {!r}", request.method, request.path
+        )
+        response = _error(INTERNAL_ERROR_MESSAGE, 500)
+    _set_security_headers(request, response.headers)
+    return response
+
+
+@web.middleware
+async def api_guard_middleware(
+    request: web.Request, handler: Handler
+) -> web.StreamResponse:
+    """Apply ``reject_cross_site_request`` to every state-changing API route."""
+    if request.method not in _SAFE_METHODS and request.path.startswith(API_PATH_PREFIX):
+        rejection = reject_cross_site_request(request)
+        if rejection is not None:
+            return rejection
+    return await handler(request)
+
+
+def _arrived_over_plain_http(request: web.Request) -> bool:
+    # Cloudflare's edge reports how the visitor reached it, for example
+    # CF-Visitor: {"scheme":"http"}. Without that header (a direct connection
+    # on a private network) there is nothing to upgrade to.
+    visitor = request.headers.get("CF-Visitor")
+    if visitor is None:
+        return False
+    try:
+        return json.loads(visitor).get("scheme") == "http"
+    except (ValueError, AttributeError):
+        return False
+
+
+@web.middleware
+async def https_redirect_middleware(
+    request: web.Request, handler: Handler
+) -> web.StreamResponse:
+    """Send a visitor who came over plain HTTP to the HTTPS address."""
+    host = request.headers.get("Host", "")
+    if host and _arrived_over_plain_http(request):
+        # 308 keeps the method and body, so a POST is repeated as a POST.
+        raise web.HTTPPermanentRedirect(f"https://{host}{request.path_qs}")
+    return await handler(request)
+
+
+# Every route gets these, in this order; a new route needs no code of its own.
+MIDDLEWARES = (
+    security_headers_middleware,
+    https_redirect_middleware,
+    api_guard_middleware,
+)
+
+
+async def _remove_server_header(
+    request: web.BaseRequest, response: web.StreamResponse
+) -> None:
+    # aiohttp adds "Server: Python/3.x aiohttp/3.x", a gift to version scanners.
+    response.headers.popall("Server", None)
 
 
 def _usage_status(answer: Answer) -> str:
@@ -182,14 +458,16 @@ def build_web_app(
     service: ScheduleService, usage_log: UsageLog | None = None
 ) -> web.Application:
     html, csp = render_page()
+    # security_headers_middleware adds the headers every response shares.
     page_headers = {
         "Content-Security-Policy": csp,
-        "Referrer-Policy": "no-referrer",
-        "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-cache",
     }
     client_limiter = RateLimiter(QUESTIONS_PER_MINUTE_PER_CLIENT)
     total_limiter = RateLimiter(QUESTIONS_PER_MINUTE_TOTAL)
+    daily_limiter = DailyLimiter(QUESTIONS_PER_DAY_TOTAL)
+    client_daily_limiter = DailyLimiter(QUESTIONS_PER_DAY_PER_CLIENT)
+    llm_slots = ConcurrencyLimiter(MAX_CONCURRENT_QUESTIONS)
 
     async def index(request: web.Request) -> web.Response:
         response = web.Response(
@@ -201,7 +479,8 @@ def build_web_app(
     async def ask(request: web.Request) -> web.Response:
         try:
             payload = await request.json()
-        except ValueError:
+        except (ValueError, RecursionError):
+            # RecursionError: JSON nested thousands of levels deep.
             return _error(EMPTY_QUESTION_MESSAGE, 400)
         question = payload.get("question") if isinstance(payload, dict) else None
         if not isinstance(question, str) or not question.strip():
@@ -209,13 +488,27 @@ def build_web_app(
         question = " ".join(question.split())
         if len(question) > MAX_QUESTION_LENGTH:
             return _error(QUESTION_TOO_LONG_MESSAGE, 400)
-        if not client_limiter.allow(_client_key(request)) or not total_limiter.allow(
-            "all"
-        ):
+        client = _client_key(request)
+        if not client_limiter.allow(client) or not total_limiter.allow("all"):
             return _error(RATE_LIMITED_MESSAGE, 429)
+        if not llm_slots.try_acquire():
+            return _error(BUSY_MESSAGE, 503, headers={"Retry-After": "5"})
 
         started = time.monotonic()
-        answer = await answer_question(question, service)
+        try:
+            # Checked last, so the daily caps count only questions that
+            # really reach the LLM.
+            if not client_daily_limiter.allow(client):
+                return _error(CLIENT_DAILY_LIMIT_MESSAGE, 429)
+            if not daily_limiter.allow():
+                return _error(DAILY_LIMIT_MESSAGE, 429)
+            async with asyncio.timeout(ANSWER_TIMEOUT_SECONDS):
+                answer = await answer_question(question, service)
+        except TimeoutError:
+            logger.warning("Answering a web question timed out.")
+            answer = Answer(status="error", message=ANALYSIS_FAILED_MESSAGE)
+        finally:
+            llm_slots.release()
         if usage_log is not None:
             usage_log.record_question(
                 visitor=normalize_visitor_id(request.headers.get("X-Visitor-Id")),
@@ -225,9 +518,37 @@ def build_web_app(
         today = datetime.now(CALTRAIN_TIMEZONE).date()
         return web.json_response(answer_to_json(answer, today))
 
-    app = web.Application(client_max_size=8 * 1024)
+    visit_client_limiter = RateLimiter(VISITS_PER_MINUTE_PER_CLIENT)
+    visit_total_limiter = RateLimiter(VISITS_PER_MINUTE_TOTAL)
+
+    async def visit(request: web.Request) -> web.Response:
+        """Count one page view. Always 204: the page ignores the answer."""
+        no_content = web.Response(status=204)
+        if (
+            usage_log is None
+            or not visit_client_limiter.allow(_client_key(request))
+            or not visit_total_limiter.allow("all")
+        ):
+            return no_content
+        try:
+            payload = await request.json()
+        except (ValueError, RecursionError, web.HTTPRequestEntityTooLarge):
+            return no_content
+        if not isinstance(payload, dict):
+            return no_content
+        usage_log.record_visit(
+            visitor=normalize_visitor_id(request.headers.get("X-Visitor-Id")),
+            country=normalize_country(request.headers.get("CF-IPCountry")),
+            device=classify_device(request.headers.get("User-Agent")),
+            referrer=normalize_referrer(payload.get("referrer"), request.host),
+        )
+        return no_content
+
+    app = web.Application(client_max_size=8 * 1024, middlewares=MIDDLEWARES)
+    app.on_response_prepare.append(_remove_server_header)
     app.router.add_get("/", index)
     app.router.add_post("/api/ask", ask)
+    app.router.add_post("/api/visit", visit)
     return app
 
 

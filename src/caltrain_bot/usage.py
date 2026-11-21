@@ -1,16 +1,17 @@
-"""Usage statistics for the web page: who asked how many questions, per day.
+"""Usage statistics for the web page: visits and questions, per day.
 
-Stores one row per answered question in a small SQLite file. It holds no
-question text and no IP address; a visitor is a random ID the page generates
-and keeps in the browser.
+Stores one row per page visit and one per answered question in a small SQLite
+file. It holds no question text, no IP address, no full URL, and no User-Agent
+string; a visitor is a random ID the page generates and keeps in the browser.
 """
 
 import argparse
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -20,7 +21,24 @@ from caltrain_bot.config import get_usage_db_path
 
 _CALTRAIN_TIMEZONE = ZoneInfo("America/Los_Angeles")
 _VISITOR_ID = re.compile(r"[0-9a-f]{32}")
+_COUNTRY = re.compile(r"[A-Za-z]{2}")
+# Cloudflare sends XX when it does not know the country.
+_UNKNOWN_COUNTRIES = frozenset({"XX"})
+_HOSTNAME_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_HOSTNAME = re.compile(rf"{_HOSTNAME_LABEL}(?:\.{_HOSTNAME_LABEL})+")
+_PORT = re.compile(r":\d+$")
+MAX_REFERRER_LENGTH = 100
+# Only the start of a User-Agent is looked at, so a huge one costs nothing.
+_USER_AGENT_PREFIX = 400
+# Real browsers do not put a URL in their User-Agent; crawlers usually do.
+_AUTOMATED_AGENT = re.compile(r"bot|crawler|spider|headless|https?:", re.IGNORECASE)
+_MOBILE_AGENT = re.compile(r"Mobi|Android|iPhone|iPad|iPod")
+_DESKTOP_AGENT = re.compile(r"Windows NT|Macintosh|X11|CrOS|Linux")
 
+Device = Literal["mobile", "desktop", "other"]
+
+# Tables are only ever added, with IF NOT EXISTS, so a database written by an
+# older version keeps working and keeps its rows.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS web_questions (
     asked_at INTEGER NOT NULL,  -- Unix seconds
@@ -30,28 +48,64 @@ CREATE TABLE IF NOT EXISTS web_questions (
     duration_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_web_questions_day ON web_questions (day);
+CREATE TABLE IF NOT EXISTS web_visits (
+    visited_at INTEGER NOT NULL,  -- Unix seconds
+    day TEXT NOT NULL,            -- calendar date in Caltrain local time
+    visitor TEXT,                 -- random browser ID; NULL when the page sent none
+    country TEXT,                 -- two-letter code from Cloudflare; NULL if unknown
+    device TEXT NOT NULL,         -- mobile, desktop, other
+    referrer TEXT                 -- host name of the referring site; NULL if none
+);
+CREATE INDEX IF NOT EXISTS idx_web_visits_day ON web_visits (day);
 """
 
 
 @dataclass(frozen=True)
 class DailyUsage:
     day: str
-    users: int
-    new_users: int
+    visits: int
+    # Distinct visitor IDs that opened the page or asked a question that day.
+    visitors: int
+    # Visitors never seen on an earlier day, in visits or in questions.
+    new_visitors: int
     questions: int
     with_trains: int
     no_trains: int
     unsupported: int
     failed: int
-    average_ms: int
+    # None on a day without questions.
+    average_ms: int | None
 
 
 @dataclass(frozen=True)
 class UsageTotals:
-    users: int
+    visitors: int
+    visits: int
     questions: int
-    users_last_7_days: int
-    users_last_30_days: int
+    visitors_last_7_days: int
+    visitors_last_30_days: int
+
+
+@dataclass(frozen=True)
+class VisitCount:
+    """Visits that share one country, referring site, or kind of device."""
+
+    # None: the country is unknown, or no other site referred the visitor.
+    name: str | None
+    visits: int
+    visitors: int
+
+
+@dataclass(frozen=True)
+class UsageStats:
+    """Everything the report and the statistics page show for one window."""
+
+    days: int
+    totals: UsageTotals
+    daily: list[DailyUsage]
+    countries: list[VisitCount]
+    referrers: list[VisitCount]
+    devices: list[VisitCount]
 
 
 def normalize_visitor_id(value: str | None) -> str | None:
@@ -59,6 +113,50 @@ def normalize_visitor_id(value: str | None) -> str | None:
     if value is not None and _VISITOR_ID.fullmatch(value):
         return value
     return None
+
+
+def normalize_country(value: str | None) -> str | None:
+    """Accept a two-letter country code, as Cloudflare's CF-IPCountry sends it."""
+    if value is None or not _COUNTRY.fullmatch(value):
+        return None
+    country = value.upper()
+    return None if country in _UNKNOWN_COUNTRIES else country
+
+
+def normalize_referrer(value: object, own_host: str | None = None) -> str | None:
+    """Accept a lowercase host name; the page's own host is not a referrer."""
+    if (
+        not isinstance(value, str)
+        or len(value) > MAX_REFERRER_LENGTH
+        or not _HOSTNAME.fullmatch(value)
+    ):
+        return None
+    if own_host is not None and value == _PORT.sub("", own_host.lower()):
+        return None
+    return value
+
+
+def classify_device(user_agent: str | None) -> Device:
+    """Sort a User-Agent into a coarse class; the string itself is not kept."""
+    agent = (user_agent or "")[:_USER_AGENT_PREFIX]
+    if not agent or _AUTOMATED_AGENT.search(agent):
+        return "other"
+    if _MOBILE_AGENT.search(agent):
+        return "mobile"
+    if _DESKTOP_AGENT.search(agent):
+        return "desktop"
+    return "other"
+
+
+def _local(now: datetime | None) -> datetime:
+    if now is None:
+        return datetime.now(_CALTRAIN_TIMEZONE)
+    return now.astimezone(_CALTRAIN_TIMEZONE)
+
+
+def _window_start(days: int, now: datetime | None) -> str:
+    """First day of the ``days`` calendar days that end today."""
+    return (_local(now).date() - timedelta(days=days - 1)).isoformat()
 
 
 class UsageLog:
@@ -82,63 +180,176 @@ class UsageLog:
         now: datetime | None = None,
     ) -> None:
         """Record one answered question. Never raises: statistics must not break answers."""
-        if now is None:
-            now = datetime.now(_CALTRAIN_TIMEZONE)
-        day = now.astimezone(_CALTRAIN_TIMEZONE).date().isoformat()
+        now = _local(now)
         try:
             with self._connection:
                 self._connection.execute(
                     "INSERT INTO web_questions VALUES (?, ?, ?, ?, ?)",
-                    (int(now.timestamp()), day, visitor, status, duration_ms),
+                    (
+                        int(now.timestamp()),
+                        now.date().isoformat(),
+                        visitor,
+                        status,
+                        duration_ms,
+                    ),
                 )
         except sqlite3.Error:
             logger.exception("Could not record web usage.")
 
-    def daily(self, days: int) -> list[DailyUsage]:
-        """Usage for the most recent ``days`` days that had any, newest first."""
+    def record_visit(
+        self,
+        visitor: str | None,
+        country: str | None,
+        device: Device,
+        referrer: str | None,
+        now: datetime | None = None,
+    ) -> None:
+        """Record one page view. Never raises: statistics must not break the page."""
+        now = _local(now)
+        try:
+            with self._connection:
+                self._connection.execute(
+                    "INSERT INTO web_visits VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        int(now.timestamp()),
+                        now.date().isoformat(),
+                        visitor,
+                        country,
+                        device,
+                        referrer,
+                    ),
+                )
+        except sqlite3.Error:
+            logger.exception("Could not record a web visit.")
+
+    def daily(self, days: int, now: datetime | None = None) -> list[DailyUsage]:
+        """Each of the last ``days`` calendar days that had any use, newest first."""
         rows = self._connection.execute(
             """
-            WITH first_days AS (
-                SELECT visitor, MIN(day) AS first_day
+            WITH seen AS (
+                -- UNION leaves one row per visitor and day, whichever table
+                -- they appear in: viewing and asking count the same.
+                SELECT day, visitor FROM web_visits WHERE visitor IS NOT NULL
+                UNION
+                SELECT day, visitor FROM web_questions WHERE visitor IS NOT NULL
+            ),
+            visitor_days AS (
+                SELECT day, COUNT(*) AS visitors FROM seen GROUP BY day
+            ),
+            new_days AS (
+                SELECT first_day AS day, COUNT(*) AS new_visitors
+                FROM (SELECT MIN(day) AS first_day FROM seen GROUP BY visitor)
+                GROUP BY first_day
+            ),
+            visit_days AS (
+                SELECT day, COUNT(*) AS visits FROM web_visits GROUP BY day
+            ),
+            question_days AS (
+                SELECT
+                    day,
+                    COUNT(*) AS questions,
+                    SUM(status = 'trains') AS with_trains,
+                    SUM(status = 'no_trains') AS no_trains,
+                    SUM(status = 'unsupported') AS unsupported,
+                    SUM(status IN ('error', 'feed_expired')) AS failed,
+                    CAST(ROUND(AVG(duration_ms)) AS INTEGER) AS average_ms
                 FROM web_questions
-                WHERE visitor IS NOT NULL
-                GROUP BY visitor
+                GROUP BY day
+            ),
+            days AS (
+                SELECT day FROM visit_days UNION SELECT day FROM question_days
             )
             SELECT
-                day,
-                COUNT(DISTINCT visitor),
-                (SELECT COUNT(*) FROM first_days WHERE first_day = day),
-                COUNT(*),
-                SUM(status = 'trains'),
-                SUM(status = 'no_trains'),
-                SUM(status = 'unsupported'),
-                SUM(status IN ('error', 'feed_expired')),
-                CAST(ROUND(AVG(duration_ms)) AS INTEGER)
-            FROM web_questions
-            GROUP BY day
-            ORDER BY day DESC
-            LIMIT ?
+                days.day,
+                COALESCE(visits, 0),
+                COALESCE(visitors, 0),
+                COALESCE(new_visitors, 0),
+                COALESCE(questions, 0),
+                COALESCE(with_trains, 0),
+                COALESCE(no_trains, 0),
+                COALESCE(unsupported, 0),
+                COALESCE(failed, 0),
+                average_ms
+            FROM days
+            LEFT JOIN visit_days ON visit_days.day = days.day
+            LEFT JOIN visitor_days ON visitor_days.day = days.day
+            LEFT JOIN new_days ON new_days.day = days.day
+            LEFT JOIN question_days ON question_days.day = days.day
+            WHERE days.day >= ?
+            ORDER BY days.day DESC
             """,
-            (days,),
+            (_window_start(days, now),),
         ).fetchall()
         return [DailyUsage(*row) for row in rows]
 
     def totals(self, now: datetime | None = None) -> UsageTotals:
-        if now is None:
-            now = datetime.now(_CALTRAIN_TIMEZONE)
-        now_seconds = int(now.timestamp())
+        now_seconds = int(_local(now).timestamp())
         row = self._connection.execute(
             """
+            WITH seen AS (
+                SELECT visited_at AS seen_at, visitor
+                FROM web_visits
+                WHERE visitor IS NOT NULL
+                UNION ALL
+                SELECT asked_at, visitor FROM web_questions WHERE visitor IS NOT NULL
+            )
             SELECT
-                COUNT(DISTINCT visitor),
-                COUNT(*),
-                COUNT(DISTINCT CASE WHEN asked_at > ? THEN visitor END),
-                COUNT(DISTINCT CASE WHEN asked_at > ? THEN visitor END)
-            FROM web_questions
+                (SELECT COUNT(DISTINCT visitor) FROM seen),
+                (SELECT COUNT(*) FROM web_visits),
+                (SELECT COUNT(*) FROM web_questions),
+                (SELECT COUNT(DISTINCT visitor) FROM seen WHERE seen_at > ?),
+                (SELECT COUNT(DISTINCT visitor) FROM seen WHERE seen_at > ?)
             """,
             (now_seconds - 7 * 86400, now_seconds - 30 * 86400),
         ).fetchone()
         return UsageTotals(*row)
+
+    def _visit_counts(
+        self,
+        column: Literal["country", "referrer", "device"],
+        days: int,
+        limit: int,
+        now: datetime | None,
+    ) -> list[VisitCount]:
+        # ``column`` is one of the fixed names above, never request data.
+        rows = self._connection.execute(
+            f"""
+            SELECT {column}, COUNT(*), COUNT(DISTINCT visitor)
+            FROM web_visits
+            WHERE day >= ?
+            GROUP BY {column}
+            ORDER BY COUNT(*) DESC, {column}
+            LIMIT ?
+            """,
+            (_window_start(days, now), limit),
+        ).fetchall()
+        return [VisitCount(*row) for row in rows]
+
+    def top_countries(
+        self, days: int, limit: int = 10, now: datetime | None = None
+    ) -> list[VisitCount]:
+        """Countries with the most visits in the last ``days`` days."""
+        return self._visit_counts("country", days, limit, now)
+
+    def top_referrers(
+        self, days: int, limit: int = 10, now: datetime | None = None
+    ) -> list[VisitCount]:
+        """Referring sites with the most visits in the last ``days`` days."""
+        return self._visit_counts("referrer", days, limit, now)
+
+    def devices(self, days: int, now: datetime | None = None) -> list[VisitCount]:
+        """Visits in the last ``days`` days by kind of device."""
+        return self._visit_counts("device", days, 10, now)
+
+    def stats(self, days: int, now: datetime | None = None) -> UsageStats:
+        return UsageStats(
+            days=days,
+            totals=self.totals(now),
+            daily=self.daily(days, now),
+            countries=self.top_countries(days, now=now),
+            referrers=self.top_referrers(days, now=now),
+            devices=self.devices(days, now),
+        )
 
 
 def open_usage_log(path: Path) -> UsageLog | None:
@@ -150,53 +361,71 @@ def open_usage_log(path: Path) -> UsageLog | None:
         return None
 
 
-def format_report(daily: list[DailyUsage], totals: UsageTotals) -> str:
-    if not totals.questions:
-        return "No questions have been asked on the web page yet."
-
-    header = (
-        "Day",
-        "Users",
-        "New",
-        "Questions",
-        "Trains",
-        "No trains",
-        "Off-topic",
-        "Failed",
-        "Avg ms",
-    )
-    rows = [
-        (
-            usage.day,
-            usage.users,
-            usage.new_users,
-            usage.questions,
-            usage.with_trains,
-            usage.no_trains,
-            usage.unsupported,
-            usage.failed,
-            usage.average_ms,
-        )
-        for usage in daily
-    ]
+def _format_table(header: tuple[str, ...], rows: list[tuple[object, ...]]) -> list[str]:
     table = [header, *(tuple(str(value) for value in row) for row in rows)]
     widths = [max(len(row[column]) for row in table) for column in range(len(header))]
-    lines = [
+    return [
         "  ".join(
             cell.ljust(width) if column == 0 else cell.rjust(width)
             for column, (cell, width) in enumerate(zip(row, widths))
         )
         for row in table
     ]
+
+
+def _format_visit_counts(label: str, counts: list[VisitCount], unnamed: str) -> str:
+    listed = ", ".join(f"{count.name or unnamed} {count.visits}" for count in counts)
+    return f"{label}: {listed or 'no visits'}"
+
+
+def format_report(stats: UsageStats) -> str:
+    totals = stats.totals
+    if not totals.visits and not totals.questions:
+        return "No visits or questions have been recorded yet."
+
+    daily = _format_table(
+        (
+            "Day",
+            "Visits",
+            "Visitors",
+            "New",
+            "Questions",
+            "Trains",
+            "No trains",
+            "Off-topic",
+            "Failed",
+            "Avg ms",
+        ),
+        [
+            (
+                usage.day,
+                usage.visits,
+                usage.visitors,
+                usage.new_visitors,
+                usage.questions,
+                usage.with_trains,
+                usage.no_trains,
+                usage.unsupported,
+                usage.failed,
+                "-" if usage.average_ms is None else usage.average_ms,
+            )
+            for usage in stats.daily
+        ],
+    )
     return "\n".join(
         (
-            "Web page usage (days in Caltrain local time)",
+            f"Web page usage, last {stats.days} days (days in Caltrain local time)",
             "",
-            *lines,
+            *(daily if stats.daily else ("Nothing in these days.",)),
             "",
-            f"All time: {totals.users} users, {totals.questions} questions",
-            f"Active users: {totals.users_last_7_days} in the last 7 days, "
-            f"{totals.users_last_30_days} in the last 30 days",
+            _format_visit_counts("Visits by country", stats.countries, "unknown"),
+            _format_visit_counts("Visits by referrer", stats.referrers, "none"),
+            _format_visit_counts("Visits by device", stats.devices, "other"),
+            "",
+            f"All time: {totals.visitors} visitors, {totals.visits} visits, "
+            f"{totals.questions} questions",
+            f"Active visitors: {totals.visitors_last_7_days} in the last 7 days, "
+            f"{totals.visitors_last_30_days} in the last 30 days",
         )
     )
 
@@ -216,7 +445,7 @@ def main() -> None:
         return
     usage_log = UsageLog(path)
     try:
-        print(format_report(usage_log.daily(args.days), usage_log.totals()))
+        print(format_report(usage_log.stats(max(args.days, 1))))
     finally:
         usage_log.close()
 
