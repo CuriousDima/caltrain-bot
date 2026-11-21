@@ -32,6 +32,7 @@ without polling Telegram as the live bot, run
 - `src/caltrain_bot/answers.py`: frontend-independent `answer_question()` flow and the shared `ScheduleService`.
 - `src/caltrain_bot/telegram_bot.py`: Telegram handlers, app wiring, and user-facing message formatting.
 - `src/caltrain_bot/web.py`: aiohttp app with the page, the `/api/ask` JSON endpoint, and rate limiting.
+- `src/caltrain_bot/limits.py`: rate, daily, and concurrency limiters shared by both frontends.
 - `src/caltrain_bot/static/index.html`: the whole web page, including its JavaScript.
 - `src/caltrain_bot/static/app.css`: generated Tailwind stylesheet, checked in. Rebuild with `npm install && npm run build:css`.
 - `src/caltrain_bot/config.py`: environment validation and repo-relative asset paths.
@@ -55,6 +56,7 @@ without polling Telegram as the live bot, run
 - Both frontends share one `ScheduleService`, because the schedule is too large to load twice. Do not build a second `ScheduleManager`.
 - The app keeps no analytics of its own (no visit counter, visitor ID, or usage database); visitor numbers come from Cloudflare Web Analytics. The page's Content-Security-Policy in `render_page()` allows only Cloudflare's script (`static.cloudflareinsights.com`) and its reporting endpoint (`cloudflareinsights.com`) besides the page itself. Do not add other third-party scripts or tracking.
 - `/api/ask` is public and each call costs an LLM request. Keep the rate limits and the question length cap in `web.py`.
+- Telegram questions cost an LLM request too. `get_trains_info()` checks the length cap and `QuestionLimits` (per Telegram user and in total) before calling `answer_question()`; keep that order so a refused message never reaches the LLM.
 - Every web route runs behind `MIDDLEWARES` in `web.py`: `security_headers_middleware` (security headers on every response, a generic JSON 500 for unexpected errors) and `api_guard_middleware` (refuses cross-site and non-JSON requests for every non-GET route under `/api/`). A new `/api/` POST route is covered automatically, so the page must call it with `Content-Type: application/json`. Client addresses for rate limiting come from `_client_key()`, which trusts `CF-Connecting-IP`; the app must only be reachable through the trusted proxy.
 - Schedule preprocessing executes the SQL file statement-by-statement and commits after each statement. Keep schema/query changes aligned with `ScheduleManager.get_trains()`, `get_next_trains()`, and related tests. `train_station_journeys` has millions of rows held in memory: keep it to the columns those queries read and keep its lookup index.
 - Question analysis is a single LLM call per message and runs through `acall` so the handler never blocks the event loop. Do not add extra LLM round trips without measuring latency on the labeled questions.

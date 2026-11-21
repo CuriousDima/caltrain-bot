@@ -145,8 +145,12 @@ then held back only by the total limits.
 - **Errors.** An unexpected failure is logged and answered with a generic
   `500` JSON error; no exception text reaches the client.
 
-These protections cover the web page only. The Telegram bot has no rate limit
-of its own.
+The Telegram bot has the same limits on questions, counted per Telegram user
+instead of per address: 12 questions a minute and 300 a day for one user, 120 a
+minute and 30,000 a day for all users together, 8 questions waiting on the LLM
+at once, and 300 characters per question. A message over a limit gets a short
+reply and costs no LLM call. The bot's counts are separate from the web page's.
+The other protections in this list apply to the web page only.
 
 ### Visitor statistics
 
@@ -266,6 +270,7 @@ instead (see [Security](#security)).
 - `src/caltrain_bot/answers.py`: Frontend-independent flow that turns a question into trains or a user-facing message.
 - `src/caltrain_bot/telegram_bot.py`: Telegram bot handlers and user-facing message formatting.
 - `src/caltrain_bot/web.py`: Web server: the page, the `/api/ask` JSON endpoint, rate limiting, and the security middlewares.
+- `src/caltrain_bot/limits.py`: Rate, daily, and concurrency limiters shared by the web page and the Telegram bot.
 - `src/caltrain_bot/static/`: The web page (`index.html`), its Tailwind source (`tailwind.css`), and the generated `app.css`.
 - `src/caltrain_bot/question_analysis.py`: DSPy program that classifies a question and extracts stations and time in a single LLM call.
 - `src/caltrain_bot/schedule.py`: GTFS loading, SQL preprocessing, station lookup, and train queries.
