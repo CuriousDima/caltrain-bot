@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import ipaddress
+import json
 import re
 import time
 from collections import deque
@@ -42,6 +43,8 @@ QUESTIONS_PER_MINUTE_PER_CLIENT = 12
 QUESTIONS_PER_MINUTE_TOTAL = 120
 # The bill for a day stays bounded even when the abuse comes from many clients.
 QUESTIONS_PER_DAY_TOTAL = 3000
+# One client cannot use up the whole day's budget and lock everyone else out.
+QUESTIONS_PER_DAY_PER_CLIENT = 300
 # Questions waiting on the LLM at once; more are turned away, never queued.
 MAX_CONCURRENT_QUESTIONS = 8
 # The page stops waiting after 30 seconds, so a slower answer helps nobody.
@@ -55,6 +58,9 @@ QUESTION_TOO_LONG_MESSAGE = "That question is too long. Keep it short."
 RATE_LIMITED_MESSAGE = "Too many questions right now. Try again in a minute."
 DAILY_LIMIT_MESSAGE = (
     "This page has answered all the questions it can today. Try again tomorrow."
+)
+CLIENT_DAILY_LIMIT_MESSAGE = (
+    "You have asked a lot of questions today. Try again tomorrow."
 )
 BUSY_MESSAGE = "Lots of riders are asking right now. Try again in a few seconds."
 JSON_REQUIRED_MESSAGE = "Send the request as application/json."
@@ -139,23 +145,25 @@ class RateLimiter:
 
 
 class DailyLimiter:
-    """Allows ``limit`` events per calendar day in Caltrain local time."""
+    """Allows ``limit`` events per key per calendar day in Caltrain local time."""
 
     def __init__(self, limit: int) -> None:
         self._limit = limit
         self._day: date | None = None
-        self._count = 0
+        self._counts: dict[str, int] = {}
 
-    def allow(self, now: datetime | None = None) -> bool:
+    def allow(self, key: str = "all", now: datetime | None = None) -> bool:
         if now is None:
             now = datetime.now(CALTRAIN_TIMEZONE)
         day = now.astimezone(CALTRAIN_TIMEZONE).date()
         if day != self._day:
+            # Yesterday's keys go too, so the table cannot grow without bound.
             self._day = day
-            self._count = 0
-        if self._count >= self._limit:
+            self._counts = {}
+        count = self._counts.get(key, 0)
+        if count >= self._limit:
             return False
-        self._count += 1
+        self._counts[key] = count + 1
         return True
 
 
@@ -400,8 +408,37 @@ async def api_guard_middleware(
     return await handler(request)
 
 
+def _arrived_over_plain_http(request: web.Request) -> bool:
+    # Cloudflare's edge reports how the visitor reached it, for example
+    # CF-Visitor: {"scheme":"http"}. Without that header (a direct connection
+    # on a private network) there is nothing to upgrade to.
+    visitor = request.headers.get("CF-Visitor")
+    if visitor is None:
+        return False
+    try:
+        return json.loads(visitor).get("scheme") == "http"
+    except (ValueError, AttributeError):
+        return False
+
+
+@web.middleware
+async def https_redirect_middleware(
+    request: web.Request, handler: Handler
+) -> web.StreamResponse:
+    """Send a visitor who came over plain HTTP to the HTTPS address."""
+    host = request.headers.get("Host", "")
+    if host and _arrived_over_plain_http(request):
+        # 308 keeps the method and body, so a POST is repeated as a POST.
+        raise web.HTTPPermanentRedirect(f"https://{host}{request.path_qs}")
+    return await handler(request)
+
+
 # Every route gets these, in this order; a new route needs no code of its own.
-MIDDLEWARES = (security_headers_middleware, api_guard_middleware)
+MIDDLEWARES = (
+    security_headers_middleware,
+    https_redirect_middleware,
+    api_guard_middleware,
+)
 
 
 async def _remove_server_header(
@@ -429,6 +466,7 @@ def build_web_app(
     client_limiter = RateLimiter(QUESTIONS_PER_MINUTE_PER_CLIENT)
     total_limiter = RateLimiter(QUESTIONS_PER_MINUTE_TOTAL)
     daily_limiter = DailyLimiter(QUESTIONS_PER_DAY_TOTAL)
+    client_daily_limiter = DailyLimiter(QUESTIONS_PER_DAY_PER_CLIENT)
     llm_slots = ConcurrencyLimiter(MAX_CONCURRENT_QUESTIONS)
 
     async def index(request: web.Request) -> web.Response:
@@ -450,17 +488,18 @@ def build_web_app(
         question = " ".join(question.split())
         if len(question) > MAX_QUESTION_LENGTH:
             return _error(QUESTION_TOO_LONG_MESSAGE, 400)
-        if not client_limiter.allow(_client_key(request)) or not total_limiter.allow(
-            "all"
-        ):
+        client = _client_key(request)
+        if not client_limiter.allow(client) or not total_limiter.allow("all"):
             return _error(RATE_LIMITED_MESSAGE, 429)
         if not llm_slots.try_acquire():
             return _error(BUSY_MESSAGE, 503, headers={"Retry-After": "5"})
 
         started = time.monotonic()
         try:
-            # Checked last, so the daily cap counts only questions that
+            # Checked last, so the daily caps count only questions that
             # really reach the LLM.
+            if not client_daily_limiter.allow(client):
+                return _error(CLIENT_DAILY_LIMIT_MESSAGE, 429)
             if not daily_limiter.allow():
                 return _error(DAILY_LIMIT_MESSAGE, 429)
             async with asyncio.timeout(ANSWER_TIMEOUT_SECONDS):

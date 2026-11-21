@@ -558,7 +558,7 @@ def test_cross_site_guard_covers_every_post_route_under_api():
 
     assert [status for status, _ in results] == [415, 403, 403, 415, 200]
     assert {cache_control for _, cache_control in results} == {"no-store"}
-    assert calls == ["/api/visit"]
+    assert calls == ["/api/future"]
 
 
 def test_daily_limiter_starts_over_at_midnight_in_caltrain_time():
@@ -609,6 +609,89 @@ def test_ask_stops_at_the_daily_limit_counting_only_llm_calls(monkeypatch):
         (429, web.DAILY_LIMIT_MESSAGE),
     ]
     assert service.schedule_helper.acall.await_count == 2
+
+
+def test_ask_stops_one_client_before_it_uses_up_the_whole_day(monkeypatch):
+    monkeypatch.setattr(web, "QUESTIONS_PER_DAY_PER_CLIENT", 2)
+    service = _service()
+
+    async def scenario(client):
+        async def ask(client_ip):
+            response = await client.post(
+                "/api/ask",
+                json={"question": "Palo Alto to SF"},
+                headers={"CF-Connecting-IP": client_ip},
+            )
+            return response.status, (await response.json())["message"]
+
+        return [
+            await ask("198.51.100.1"),
+            await ask("198.51.100.1"),
+            await ask("198.51.100.1"),
+            await ask("198.51.100.2"),
+        ]
+
+    results = _session(web.build_web_app(service), scenario)
+
+    assert results == [
+        (200, web.NO_TRAINS_MESSAGE),
+        (200, web.NO_TRAINS_MESSAGE),
+        (429, web.CLIENT_DAILY_LIMIT_MESSAGE),
+        (200, web.NO_TRAINS_MESSAGE),
+    ]
+    assert service.schedule_helper.acall.await_count == 3
+
+
+def test_daily_limiter_counts_each_key_separately_and_forgets_them_overnight():
+    limiter = web.DailyLimiter(limit=1)
+    monday = datetime(2026, 8, 31, 12, 0, tzinfo=CALTRAIN_TIMEZONE)
+    tuesday = datetime(2026, 9, 1, 12, 0, tzinfo=CALTRAIN_TIMEZONE)
+
+    assert limiter.allow("a", now=monday)
+    assert not limiter.allow("a", now=monday)
+    assert limiter.allow("b", now=monday)
+    assert limiter.allow("a", now=tuesday)
+    assert limiter._counts == {"a": 1}
+
+
+def test_visitors_arriving_over_plain_http_are_sent_to_https():
+    async def scenario(client):
+        async def get(path, headers):
+            response = await client.get(path, headers=headers, allow_redirects=False)
+            return response.status, response.headers.get("Location")
+
+        plain = {"Host": "caltrain.help", "CF-Visitor": '{"scheme":"http"}'}
+        post = await client.post(
+            "/api/ask",
+            json={"question": "Palo Alto to SF"},
+            headers=plain,
+            allow_redirects=False,
+        )
+        _assert_security_headers(post)
+        return [
+            await get("/?utm=1", plain),
+            (post.status, post.headers.get("Location")),
+            await get(
+                "/", {"Host": "caltrain.help", "CF-Visitor": '{"scheme":"https"}'}
+            ),
+            # No Cloudflare in front (tailnet, local runs): nothing to upgrade to.
+            await get("/", {"Host": "nest:8080"}),
+            await get("/", {"Host": "nest:8080", "CF-Visitor": "not json"}),
+            await get("/", {"Host": "nest:8080", "CF-Visitor": '"http"'}),
+        ]
+
+    service = _service()
+    results = _session(web.build_web_app(service), scenario)
+
+    assert results == [
+        (308, "https://caltrain.help/?utm=1"),
+        (308, "https://caltrain.help/api/ask"),
+        (200, None),
+        (200, None),
+        (200, None),
+        (200, None),
+    ]
+    service.schedule_helper.acall.assert_not_awaited()
 
 
 def test_ask_turns_questions_away_while_too_many_are_in_flight(monkeypatch):

@@ -1,3 +1,5 @@
+import sys
+
 from aiohttp.web import AppRunner, run_app
 from dotenv import load_dotenv
 from loguru import logger
@@ -10,7 +12,15 @@ from caltrain_bot.usage import open_usage_log
 from caltrain_bot.web import build_web_app, start_web_server
 
 
+def configure_logging() -> None:
+    # loguru's default prints every local variable in a traceback, which puts
+    # riders' questions (and whatever else is in scope) into the logs.
+    logger.remove()
+    logger.add(sys.stderr, diagnose=False)
+
+
 def main() -> None:
+    configure_logging()
     _ = load_dotenv()
     settings = load_settings()
     # The schedule takes ~1.6 GB of memory, so both frontends share one copy.

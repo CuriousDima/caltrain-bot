@@ -118,9 +118,10 @@ Cloudflare Tunnel does unless `httpHostHeader` is set. Anyone who can connect
 to the port directly can forge the headers that identify a visitor, and is
 then held back only by the total limits.
 
-- **Question limits.** 12 questions per minute per client, 120 per minute and
-  3000 per day in total, and 8 questions in progress at once. The day is the
-  Caltrain calendar day; the count lives in memory, so a restart resets it.
+- **Question limits.** 12 questions per minute and 300 per day per client, 120
+  per minute and 3000 per day in total, and 8 questions in progress at once.
+  The day is the Caltrain calendar day; the counts live in memory, so a
+  restart resets them.
   Over a limit the endpoint answers `429` (or `503` when all 8 slots are busy)
   without calling the LLM. An answer that takes more than 30 seconds is given
   up. Questions are capped at 300 characters and request bodies at 8 KB.
@@ -143,6 +144,12 @@ then held back only by the total limits.
   has a hash-based `Content-Security-Policy`; everything else gets
   `default-src 'none'; frame-ancestors 'none'` and `Cache-Control: no-store`.
   The `Server` header is removed.
+- **HTTPS.** A request that Cloudflare received over plain HTTP (its
+  `CF-Visitor` header says `"scheme":"http"`) is answered with a `308`
+  redirect to the same address over HTTPS. Requests without that header, such
+  as local runs or a private network, are served as they are.
+- **Logs.** Tracebacks are logged without the values of local variables, so a
+  failure does not copy riders' questions or settings into the log.
 - **Errors.** An unexpected failure is logged and answered with a generic
   `500` JSON error; no exception text reaches the client.
 

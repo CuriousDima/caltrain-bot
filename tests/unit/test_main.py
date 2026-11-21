@@ -28,6 +28,7 @@ def wiring(monkeypatch):
     mocks.build_stats_app = MagicMock(return_value=mocks.stats_app)
     mocks.start_stats_server = AsyncMock(return_value=mocks.stats_runner)
     monkeypatch.setattr(caltrain_bot, "load_dotenv", lambda: False)
+    monkeypatch.setattr(caltrain_bot, "configure_logging", lambda: None)
     monkeypatch.setattr(caltrain_bot, "build_schedule_service", lambda _: mocks.service)
     monkeypatch.setattr(caltrain_bot, "build_web_app", mocks.build_web_app)
     monkeypatch.setattr(caltrain_bot, "open_usage_log", mocks.open_usage_log)
@@ -161,3 +162,16 @@ def test_main_keeps_the_web_page_up_when_the_statistics_port_is_busy(wiring):
     assert "address already in use" in wiring.warning.call_args.args[0]
     asyncio.run(wiring.telegram_app.post_shutdown(wiring.telegram_app))
     wiring.runner.cleanup.assert_awaited_once_with()
+
+
+def test_logging_keeps_local_variables_out_of_tracebacks(monkeypatch):
+    added = []
+    monkeypatch.setattr(caltrain_bot.logger, "remove", lambda *args: None)
+    monkeypatch.setattr(
+        caltrain_bot.logger, "add", lambda sink, **options: added.append(options)
+    )
+
+    caltrain_bot.configure_logging()
+
+    # diagnose=True would print riders' questions with every traceback.
+    assert added == [{"diagnose": False}]
