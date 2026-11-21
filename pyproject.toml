@@ -3,6 +3,7 @@ name = "caltrain-bot"
 version = "0.1.2"
 description = "Caltrain schedule bot for Telegram"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "Dima Timofeev", email = "1127655+CuriousDima@users.noreply.github.com" }
 ]

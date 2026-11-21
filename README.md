@@ -286,3 +286,9 @@ instead (see [Security](#security)).
 Contributions are welcome. The project ships Telegram and web frontends, and the schedule and question-analysis logic is separated enough to support additional chat frontends.
 
 People are especially welcome to contribute WhatsApp and WeChat support. If you want to add another messaging integration, try to keep transport-specific code at the edge and reuse `answers.py`, as `telegram_bot.py` and `web.py` do.
+
+## License
+
+The code is released under the [MIT License](LICENSE). The Caltrain timetable
+in `data/caltrain-ca-us.zip` is published by Caltrain and is not covered by
+that license.
