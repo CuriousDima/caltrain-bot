@@ -42,7 +42,7 @@ MAX_QUESTION_LENGTH = 300
 QUESTIONS_PER_MINUTE_PER_CLIENT = 12
 QUESTIONS_PER_MINUTE_TOTAL = 120
 # The bill for a day stays bounded even when the abuse comes from many clients.
-QUESTIONS_PER_DAY_TOTAL = 3000
+QUESTIONS_PER_DAY_TOTAL = 30_000
 # One client cannot use up the whole day's budget and lock everyone else out.
 QUESTIONS_PER_DAY_PER_CLIENT = 300
 # Questions waiting on the LLM at once; more are turned away, never queued.
