@@ -16,7 +16,13 @@ from loguru import logger
 from caltrain_bot.answers import Answer, ScheduleService, answer_question
 from caltrain_bot.question_analysis import CALTRAIN_TIMEZONE
 from caltrain_bot.schedule import Train
-from caltrain_bot.usage import UsageLog, normalize_visitor_id
+from caltrain_bot.usage import (
+    UsageLog,
+    classify_device,
+    normalize_country,
+    normalize_referrer,
+    normalize_visitor_id,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -24,6 +30,9 @@ MAX_QUESTION_LENGTH = 300
 # Every question costs one paid LLM call, so cap how fast anyone can ask.
 QUESTIONS_PER_MINUTE_PER_CLIENT = 12
 QUESTIONS_PER_MINUTE_TOTAL = 120
+# Every recorded visit is one disk write, so cap how fast anyone can add them.
+VISITS_PER_MINUTE_PER_CLIENT = 30
+VISITS_PER_MINUTE_TOTAL = 600
 
 EMPTY_QUESTION_MESSAGE = "Type a question first."
 QUESTION_TOO_LONG_MESSAGE = "That question is too long. Keep it short."
@@ -225,9 +234,36 @@ def build_web_app(
         today = datetime.now(CALTRAIN_TIMEZONE).date()
         return web.json_response(answer_to_json(answer, today))
 
+    visit_client_limiter = RateLimiter(VISITS_PER_MINUTE_PER_CLIENT)
+    visit_total_limiter = RateLimiter(VISITS_PER_MINUTE_TOTAL)
+
+    async def visit(request: web.Request) -> web.Response:
+        """Count one page view. Always 204: the page ignores the answer."""
+        no_content = web.Response(status=204)
+        if (
+            usage_log is None
+            or not visit_client_limiter.allow(_client_key(request))
+            or not visit_total_limiter.allow("all")
+        ):
+            return no_content
+        try:
+            payload = await request.json()
+        except (ValueError, web.HTTPRequestEntityTooLarge):
+            return no_content
+        if not isinstance(payload, dict):
+            return no_content
+        usage_log.record_visit(
+            visitor=normalize_visitor_id(request.headers.get("X-Visitor-Id")),
+            country=normalize_country(request.headers.get("CF-IPCountry")),
+            device=classify_device(request.headers.get("User-Agent")),
+            referrer=normalize_referrer(payload.get("referrer"), request.host),
+        )
+        return no_content
+
     app = web.Application(client_max_size=8 * 1024)
     app.router.add_get("/", index)
     app.router.add_post("/api/ask", ask)
+    app.router.add_post("/api/visit", visit)
     return app
 
 

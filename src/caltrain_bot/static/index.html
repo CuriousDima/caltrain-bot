@@ -116,8 +116,9 @@
     }
   }
 
-  // A random ID with no personal data, sent with each question so the server
-  // can count how many people use the page. This is its only use.
+  // A random ID with no personal data, sent when the page opens and with each
+  // question so the server can count how many people use the page. This is
+  // its only use.
   function visitorId() {
     try {
       let id = localStorage.getItem(VISITOR_KEY);
@@ -129,6 +130,30 @@
       return id;
     } catch {
       return null;
+    }
+  }
+
+  // Tells the server the page was opened. Besides the random ID it sends only
+  // the host name of the site that linked here, never the full address.
+  function reportVisit() {
+    let referrer = "";
+    try {
+      referrer = new URL(document.referrer).hostname;
+    } catch {
+      // Opened directly: there is no referring site.
+    }
+    const headers = { "Content-Type": "application/json" };
+    const visitor = visitorId();
+    if (visitor) headers["X-Visitor-Id"] = visitor;
+    try {
+      fetch("api/visit", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ referrer }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      // Counting visits must never get in the way of the page.
     }
   }
 
@@ -268,6 +293,7 @@
   setInterval(refreshCountdowns, 15000);
   document.addEventListener("visibilitychange", refreshCountdowns);
   renderShortcuts();
+  reportVisit();
 })();
 </script>
 </body>
