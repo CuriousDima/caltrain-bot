@@ -59,11 +59,6 @@ Optional variables:
   `OPENROUTER_MODEL` fails or is no longer served.
 - `OPENROUTER_REASONING_EFFORT`: OpenRouter reasoning effort (`none`, `low`,
   ...). Leave it unset for the model's default, which is the most accurate.
-- `USAGE_DB_PATH`: where the web page's usage statistics are stored. Defaults
-  to `data/usage.db`.
-- `STATS_PORT`: serves the private statistics page on this port, for example
-  `8081`. It needs `WEB_PORT` and must be a different port. Never expose it to
-  the internet; see [Statistics page](#statistics-page).
 
 Example `.env`:
 
@@ -100,9 +95,6 @@ is one tap.
   response, so it loads in one round trip on a weak signal.
 - `POST /api/ask` takes `{"question": "..."}` and returns JSON with the
   understood route and the trains.
-- `POST /api/visit` is called by the page once per load so visitors can be
-  counted. It always answers `204` with no body, and it writes at most 30
-  visits per minute per client and 600 per minute in total.
 - Each question is one paid LLM call, so the endpoint limits how many it
   answers; see [Security](#security).
 - The server speaks plain HTTP. Put it behind a reverse proxy or tunnel that
@@ -156,71 +148,17 @@ then held back only by the total limits.
 These protections cover the web page only. The Telegram bot has no rate limit
 of its own.
 
-### Usage statistics
+### Visitor statistics
 
-The web server keeps two kinds of rows in a small SQLite file:
-
-- One per page visit: the time, an anonymous visitor ID, the visitor's country,
-  the kind of device (`mobile`, `desktop`, or `other`), and the host name of
-  the site that linked to the page.
-- One per answered question: the time, the visitor ID, the outcome, and how
-  long the answer took.
-
-It stores no IP address, no question text, no User-Agent string, and no full
-address of a referring page. The visitor ID is a random value the page keeps in
-the browser's local storage and sends when the page opens and with each
-question; the page sets no cookies. The country is the two-letter code that
-Cloudflare adds to each request in the `CF-IPCountry` header, so it is empty
-unless the page is served through Cloudflare. Telegram usage is not counted.
-
-Print the report:
-
-```shell
-uv run caltrain-bot-usage --days 14
-```
-
-```text
-Web page usage, last 14 days (days in Caltrain local time)
-
-Day         Visits  Visitors  New  Questions  Trains  No trains  Off-topic  Failed  Avg ms
-2026-11-18      44        29    9         31      26          2          3       0    1180
-
-Visits by country: US 39, CA 3, unknown 2
-Visits by referrer: none 30, news.ycombinator.com 9, www.google.com 5
-Visits by device: mobile 31, desktop 12, other 1
-
-All time: 143 visitors, 310 visits, 240 questions
-Active visitors: 61 in the last 7 days, 118 in the last 30 days
-```
-
-"Visitors" are the distinct visitor IDs that opened the page or asked a
-question that day, so someone who only looked counts the same as someone who
-asked. "New" visitors were never seen on an earlier day. A visit from a browser
-that sent no ID (local storage switched off) is a visit without a visitor. The
-report lists the last `--days` calendar days and leaves out days without any
-use. The file is `data/usage.db` unless `USAGE_DB_PATH` points elsewhere.
-
-### Statistics page
-
-Set `STATS_PORT` to see the same numbers in a browser:
-
-```dotenv
-WEB_PORT=8080
-STATS_PORT=8081
-```
-
-- `GET /` on that port shows the totals, the top countries, the top referring
-  sites, the split by device, and a table with one row per day. `?days=N`
-  chooses how many days to show, from 1 to 365 (default 30).
-- `GET /api/stats?days=N` returns the same numbers as JSON.
-
-The statistics page has no password. It is private only because it listens on
-its own port: the public page never serves statistics, and the statistics port
-serves nothing else. So the port itself must stay private. Route only
-`WEB_PORT` through the reverse proxy or tunnel that makes the page public, and
-reach `STATS_PORT` over a private network such as Tailscale or an SSH tunnel.
-If the usage file cannot be opened, or the port is taken, the bot logs a
-warning and runs without the statistics page.
+The app keeps no statistics of its own: no visit counter, no visitor ID, no
+usage database. Visitor numbers come from
+[Cloudflare Web Analytics](https://developers.cloudflare.com/web-analytics/)
+when the page is served through Cloudflare with Web Analytics switched on for
+the domain. Cloudflare then adds its script to the page on the way out, and
+the page's Content-Security-Policy allows exactly that: the script from
+`static.cloudflareinsights.com` and its reports to `cloudflareinsights.com`.
+Nothing else from another site may load or be contacted. Without Cloudflare in
+front, no script is added and nothing is counted.
 
 The page is styled with [Tailwind CSS](https://tailwindcss.com). The generated
 stylesheet `src/caltrain_bot/static/app.css` is checked in, so running the bot
@@ -322,28 +260,12 @@ one in-memory schedule. To put the page on the public internet, do not publish
 the port; let a tunnel or reverse proxy on the same Docker network reach it
 instead (see [Security](#security)).
 
-The image keeps usage statistics in `/app/usage`. Mount a volume there with
-`-v caltrain-bot-usage:/app/usage`, or they are lost when the container is
-replaced. Read them with:
-
-```shell
-docker exec caltrain-bot caltrain-bot-usage
-```
-
-To open the [statistics page](#statistics-page) in a browser, add
-`STATS_PORT=8081` to the env file and publish that port only on an address the
-internet cannot reach, for example the host's Tailscale address:
-`-p 100.64.0.1:8081:8081`. With `--network host` the port listens on every
-interface of the host, so a firewall or the network has to keep it private.
-
 ## Project Layout
 
 - `src/caltrain_bot/__init__.py`: CLI entrypoint that starts the Telegram bot, the web server, or both.
 - `src/caltrain_bot/answers.py`: Frontend-independent flow that turns a question into trains or a user-facing message.
 - `src/caltrain_bot/telegram_bot.py`: Telegram bot handlers and user-facing message formatting.
-- `src/caltrain_bot/web.py`: Web server: the page, the `/api/ask` JSON endpoint, the `/api/visit` counter, rate limiting, and the security middlewares.
-- `src/caltrain_bot/stats_web.py`: Private statistics page and its JSON endpoint, served on `STATS_PORT`.
-- `src/caltrain_bot/usage.py`: Usage statistics for the web page (visits and questions) and the `caltrain-bot-usage` report command.
+- `src/caltrain_bot/web.py`: Web server: the page, the `/api/ask` JSON endpoint, rate limiting, and the security middlewares.
 - `src/caltrain_bot/static/`: The web page (`index.html`), its Tailwind source (`tailwind.css`), and the generated `app.css`.
 - `src/caltrain_bot/question_analysis.py`: DSPy program that classifies a question and extracts stations and time in a single LLM call.
 - `src/caltrain_bot/schedule.py`: GTFS loading, SQL preprocessing, station lookup, and train queries.

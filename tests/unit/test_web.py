@@ -67,11 +67,11 @@ def _service(
     )
 
 
-def _request(service, method="POST", path="/api/ask", usage_log=None, **kwargs):
+def _request(service, method="POST", path="/api/ask", **kwargs):
     """Send one request to the app without opening a real network port."""
 
     async def run():
-        app = web.build_web_app(service, usage_log)
+        app = web.build_web_app(service)
         async with TestClient(TestServer(app)) as client:
             response = await client.request(method, path, **kwargs)
             is_json = response.content_type == "application/json"
@@ -134,6 +134,32 @@ def test_page_is_served_in_one_response_with_a_matching_csp():
     assert web._csp_hash(style.group(1)) in csp
     assert web._csp_hash(script.group(1)) in csp
     assert "unsafe-inline" not in csp
+
+
+def test_page_policy_lets_cloudflare_web_analytics_run_and_nothing_else():
+    response, _ = _request(_service(), "GET", "/")
+
+    policy = dict(
+        directive.split(" ", 1)
+        for directive in response.headers["Content-Security-Policy"].split("; ")
+    )
+    script_sources = policy["script-src"].split()
+    # The page's own inline script by hash, plus the script Cloudflare adds.
+    assert [s for s in script_sources if not s.startswith("'sha256-")] == [
+        "https://static.cloudflareinsights.com"
+    ]
+    assert policy["connect-src"] == "'self' https://cloudflareinsights.com"
+    assert policy["default-src"] == "'none'"
+
+
+def test_page_and_server_keep_no_analytics_of_their_own():
+    _, html = _request(_service(), "GET", "/")
+    assert "X-Visitor-Id" not in html
+    assert "api/visit" not in html
+
+    for path in ("/api/visit", "/api/stats"):
+        response, _ = _request(_service(), path=path, json={})
+        assert response.status == 404
 
 
 def test_stylesheet_is_rebuilt_after_class_changes():
@@ -739,7 +765,6 @@ def test_ask_gives_up_on_an_answer_the_page_no_longer_waits_for(monkeypatch):
     monkeypatch.setattr(web, "ANSWER_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(web, "MAX_CONCURRENT_QUESTIONS", 1)
     service = _service()
-    usage_log = MagicMock()
 
     async def stuck_analysis(**kwargs):
         await asyncio.sleep(60)
@@ -751,14 +776,11 @@ def test_ask_gives_up_on_an_answer_the_page_no_longer_waits_for(monkeypatch):
         second = await client.post("/api/ask", json={"question": "Palo Alto to SF"})
         return first.status, await first.json(), second.status
 
-    status, body, second_status = _session(
-        web.build_web_app(service, usage_log), scenario
-    )
+    status, body, second_status = _session(web.build_web_app(service), scenario)
 
     assert status == second_status == 200
     assert body["status"] == "error"
     assert body["message"] == ANALYSIS_FAILED_MESSAGE
-    assert usage_log.record_question.call_args.kwargs["status"] == "error"
 
 
 def _assert_security_headers(response, cache_control="no-store"):
@@ -860,254 +882,3 @@ def test_unexpected_errors_are_logged_and_never_shown_to_the_client():
     assert len(logged) == 1
     assert "Unhandled error while serving POST '/api/ask'" in logged[0]
     assert "secret_internal_detail" in logged[0]
-
-
-def test_ask_records_usage_without_the_question_text():
-    usage_log = MagicMock()
-    visitor = "0123456789abcdef0123456789abcdef"
-
-    _request(
-        _service(trains=[_train("2026-08-31 12:05:00", "2026-08-31 12:58:00")]),
-        usage_log=usage_log,
-        json={"question": "Palo Alto to 22nd Street"},
-        headers={"X-Visitor-Id": visitor},
-    )
-
-    usage_log.record_question.assert_called_once()
-    recorded = usage_log.record_question.call_args.kwargs
-    assert recorded["visitor"] == visitor
-    assert recorded["status"] == "trains"
-    assert recorded["duration_ms"] >= 0
-    assert set(recorded) == {"visitor", "status", "duration_ms"}
-
-
-def test_ask_records_outcomes_and_ignores_malformed_visitor_ids():
-    cases = (
-        (_service(trains=[]), "no_trains"),
-        (_service(analysis=UnsupportedQuestion()), "unsupported"),
-        (_service(analysis_error=TimeoutError()), "error"),
-    )
-    for service, expected_status in cases:
-        usage_log = MagicMock()
-
-        _request(
-            service,
-            usage_log=usage_log,
-            json={"question": "Palo Alto to SF"},
-            headers={"X-Visitor-Id": "<script>"},
-        )
-
-        recorded = usage_log.record_question.call_args.kwargs
-        assert recorded["status"] == expected_status
-        assert recorded["visitor"] is None
-
-
-def test_ask_does_not_record_rejected_requests():
-    usage_log = MagicMock()
-
-    _request(_service(), usage_log=usage_log, json={"question": "  "})
-
-    usage_log.record_question.assert_not_called()
-
-
-VISITOR = "0123456789abcdef0123456789abcdef"
-IPHONE_USER_AGENT = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1"
-)
-
-
-def _visit(usage_log, service=None, **kwargs):
-    return _request(
-        service or _service(), path="/api/visit", usage_log=usage_log, **kwargs
-    )
-
-
-def test_page_reports_the_visit_once_per_load():
-    _, html = _request(_service(), "GET", "/")
-
-    assert html.count('fetch("api/visit"') == 1
-    # One definition and one call, outside any event handler.
-    assert html.count("reportVisit()") == 2
-    assert "new URL(document.referrer).hostname" in html
-
-
-def test_visit_is_recorded_with_coarse_details_only():
-    usage_log = MagicMock()
-    service = _service()
-
-    response, body = _visit(
-        usage_log,
-        service,
-        json={"referrer": "news.ycombinator.com"},
-        headers={
-            "X-Visitor-Id": VISITOR,
-            "CF-IPCountry": "us",
-            "User-Agent": IPHONE_USER_AGENT,
-            "X-Forwarded-For": "203.0.113.7",
-        },
-    )
-
-    assert response.status == 204
-    assert body == ""
-    usage_log.record_visit.assert_called_once_with(
-        visitor=VISITOR,
-        country="US",
-        device="mobile",
-        referrer="news.ycombinator.com",
-    )
-    usage_log.record_question.assert_not_called()
-    service.schedule_helper.acall.assert_not_called()
-
-
-def test_visit_stores_null_for_anything_that_fails_validation():
-    cases = (
-        ({"referrer": "https://evil.example/<script>"}, {}),
-        ({"referrer": "<script>alert(1)</script>"}, {"CF-IPCountry": "XX"}),
-        ({"referrer": "News.Example"}, {"CF-IPCountry": "T1"}),
-        ({"referrer": "a" * 97 + ".com"}, {"CF-IPCountry": "USA"}),
-        ({"referrer": ["news.example"]}, {"CF-IPCountry": "<b"}),
-        ({"referrer": ""}, {"X-Visitor-Id": "<script>"}),
-        ({}, {"X-Visitor-Id": VISITOR.upper()}),
-        # The page's own host is not a referring site.
-        ({"referrer": "caltrain.help"}, {"Host": "caltrain.help"}),
-        ({"referrer": "caltrain.help"}, {"Host": "Caltrain.Help:8080"}),
-    )
-    for payload, headers in cases:
-        usage_log = MagicMock()
-
-        response, _ = _visit(usage_log, json=payload, headers=headers)
-
-        assert response.status == 204
-        # aiohttp's test client names itself, which is not a phone or a desktop.
-        usage_log.record_visit.assert_called_once_with(
-            visitor=None, country=None, device="other", referrer=None
-        )
-
-
-def test_visit_always_answers_204_and_ignores_malformed_bodies():
-    json_type = {"Content-Type": "application/json"}
-    cases = (
-        {"data": "not json", "headers": json_type},
-        {"data": "", "headers": json_type},
-        {"data": '["news.example"]', "headers": json_type},
-        {"data": '"news.example"', "headers": json_type},
-        {"data": b"\xff\xfe", "headers": json_type},
-        {"data": '{"referrer": "' + "a" * 10_000 + '"}', "headers": json_type},
-    )
-    for kwargs in cases:
-        usage_log = MagicMock()
-
-        response, body = _visit(usage_log, **kwargs)
-
-        assert (response.status, body) == (204, "")
-        usage_log.record_visit.assert_not_called()
-
-
-def test_visit_answers_204_without_a_usage_log():
-    service = _service()
-
-    response, body = _visit(None, service, json={"referrer": "news.example"})
-
-    assert (response.status, body) == (204, "")
-    service.schedule_helper.acall.assert_not_called()
-
-
-def test_visit_reaches_the_usage_database(tmp_path):
-    usage_log = web.UsageLog(tmp_path / "usage.db")
-    try:
-        _visit(
-            usage_log,
-            json={"referrer": "news.example"},
-            headers={"X-Visitor-Id": VISITOR, "CF-IPCountry": "CA"},
-        )
-        stats = usage_log.stats(days=1)
-    finally:
-        usage_log.close()
-
-    assert (stats.totals.visits, stats.totals.visitors) == (1, 1)
-    assert [(count.name, count.visits) for count in stats.countries] == [("CA", 1)]
-    assert [(count.name, count.visits) for count in stats.referrers] == [
-        ("news.example", 1)
-    ]
-
-
-def _visit_many(usage_log, forwarded_for):
-    async def run():
-        app = web.build_web_app(_service(), usage_log)
-        async with TestClient(TestServer(app)) as client:
-            statuses = []
-            for address in forwarded_for:
-                response = await client.post(
-                    "/api/visit",
-                    json={"referrer": ""},
-                    headers={"X-Forwarded-For": address},
-                )
-                statuses.append(response.status)
-            return statuses
-
-    return asyncio.run(run())
-
-
-def test_visit_limits_how_fast_one_client_can_add_rows(monkeypatch):
-    monkeypatch.setattr(web, "VISITS_PER_MINUTE_PER_CLIENT", 2)
-    usage_log = MagicMock()
-
-    statuses = _visit_many(
-        usage_log, ("1.1.1.1", "9.9.9.9, 1.1.1.1", "1.1.1.1", "2.2.2.2", "1.1.1.1")
-    )
-
-    # A limited client is not told so; its visits are just not written.
-    assert statuses == [204] * 5
-    assert usage_log.record_visit.call_count == 3
-
-
-def test_visit_limits_how_fast_everyone_together_can_add_rows(monkeypatch):
-    monkeypatch.setattr(web, "VISITS_PER_MINUTE_TOTAL", 3)
-    usage_log = MagicMock()
-
-    statuses = _visit_many(usage_log, [f"10.0.0.{n}" for n in range(1, 7)])
-
-    assert statuses == [204] * 6
-    assert usage_log.record_visit.call_count == 3
-
-
-def test_visit_limit_is_separate_from_the_question_limit(monkeypatch):
-    monkeypatch.setattr(web, "VISITS_PER_MINUTE_PER_CLIENT", 1)
-    service = _service()
-
-    async def run():
-        async with TestClient(TestServer(web.build_web_app(service))) as client:
-            for _ in range(3):
-                await client.post("/api/visit", json={"referrer": ""})
-            response = await client.post(
-                "/api/ask", json={"question": "Palo Alto to SF"}
-            )
-            return response.status
-
-    assert asyncio.run(run()) == 200
-
-
-def test_public_app_serves_no_statistics(tmp_path):
-    usage_log = web.UsageLog(tmp_path / "usage.db")
-    usage_log.record_visit(VISITOR, "US", "mobile", "secret-referrer.example")
-    try:
-        app = web.build_web_app(_service(), usage_log)
-        paths = {
-            route.resource.canonical
-            for route in app.router.routes()
-            if route.resource is not None
-        }
-        assert not [path for path in paths if "stat" in path]
-
-        for path in ("/api/stats", "/stats", "/api/visit", "/api/visits", "/usage"):
-            response, body = _request(_service(), "GET", path, usage_log=usage_log)
-            assert response.status in (404, 405)
-            assert "secret-referrer.example" not in str(body)
-
-        response, html = _request(_service(), "GET", "/?days=7", usage_log=usage_log)
-        assert response.status == 200
-        assert "secret-referrer.example" not in html
-        assert "statistics" not in html.lower()
-    finally:
-        usage_log.close()
