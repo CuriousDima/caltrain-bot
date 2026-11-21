@@ -119,7 +119,7 @@ to the port directly can forge the headers that identify a visitor, and is
 then held back only by the total limits.
 
 - **Question limits.** 12 questions per minute and 300 per day per client, 120
-  per minute and 3000 per day in total, and 8 questions in progress at once.
+  per minute and 30,000 per day in total, and 8 questions in progress at once.
   The day is the Caltrain calendar day; the counts live in memory, so a
   restart resets them.
   Over a limit the endpoint answers `429` (or `503` when all 8 slots are busy)
