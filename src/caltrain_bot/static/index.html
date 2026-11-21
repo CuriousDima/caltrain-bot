@@ -21,7 +21,7 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body class="bg-stone-50 text-stone-900 antialiased dark:bg-stone-950 dark:text-stone-100">
-<main class="mx-auto flex min-h-dvh max-w-md flex-col px-4 pt-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+<main class="mx-auto flex min-h-dvh max-w-md flex-col px-4 pt-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:pt-12">
   <h1 class="text-2xl font-bold tracking-tight">Caltrain schedule</h1>
 
   <form id="ask-form" class="mt-3" novalidate>
@@ -30,7 +30,7 @@
            autocomplete="off" enterkeyhint="search" placeholder="Palo Alto to SF at 5pm"
            class="mt-2 h-14 w-full rounded-2xl border border-stone-300 bg-white px-4 text-lg text-stone-900 placeholder:text-stone-400 focus:border-red-600 focus:outline-2 focus:outline-offset-0 focus:outline-red-600/30 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 dark:placeholder:text-stone-500">
     <button id="ask-button" type="submit"
-            class="mt-3 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 text-lg font-semibold text-white active:bg-red-700 disabled:opacity-70">
+            class="mt-3 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 text-lg font-semibold text-white enabled:cursor-pointer enabled:hover:bg-red-700 active:bg-red-700 disabled:opacity-70">
       <svg id="ask-spinner" hidden class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" class="opacity-30"></circle>
         <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
@@ -78,7 +78,7 @@
 </template>
 
 <template id="shortcut-template">
-  <button type="button" class="min-h-11 max-w-full truncate rounded-full border border-stone-300 bg-white px-4 text-left text-sm text-stone-800 active:bg-stone-100 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:active:bg-stone-800"></button>
+  <button type="button" class="min-h-11 max-w-full truncate rounded-full border border-stone-300 bg-white px-4 text-left text-sm text-stone-800 cursor-pointer hover:bg-stone-100 active:bg-stone-100 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800 dark:active:bg-stone-800"></button>
 </template>
 
 <script>
