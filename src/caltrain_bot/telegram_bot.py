@@ -1,5 +1,6 @@
 import asyncio
 import functools
+from dataclasses import dataclass, field
 from datetime import datetime
 from html import escape
 
@@ -16,7 +17,80 @@ from telegram.ext import (
 )
 
 from caltrain_bot.answers import ScheduleService, answer_question
+from caltrain_bot.limits import ConcurrencyLimiter, DailyLimiter, RateLimiter
 from caltrain_bot.schedule import Train
+
+
+MAX_QUESTION_LENGTH = 300
+# Every question costs one paid LLM call, so cap how fast anyone can ask.
+QUESTIONS_PER_MINUTE_PER_USER = 12
+QUESTIONS_PER_MINUTE_TOTAL = 120
+QUESTIONS_PER_DAY_PER_USER = 300
+QUESTIONS_PER_DAY_TOTAL = 30_000
+# Questions waiting on the LLM at once; more are turned away, never queued.
+MAX_CONCURRENT_QUESTIONS = 8
+
+TEXT_ONLY_MESSAGE = "Sorry, I can only process text messages."
+QUESTION_TOO_LONG_MESSAGE = "That question is too long. Please keep it short."
+RATE_LIMITED_MESSAGE = "Too many questions right now. Please try again in a minute."
+USER_DAILY_LIMIT_MESSAGE = (
+    "You have asked a lot of questions today. Please try again tomorrow."
+)
+DAILY_LIMIT_MESSAGE = (
+    "I have answered all the questions I can today. Please try again tomorrow."
+)
+BUSY_MESSAGE = "Lots of riders are asking right now. Please try again in a few seconds."
+
+
+@dataclass
+class QuestionLimits:
+    """What a Telegram question has to pass before it may cost an LLM call."""
+
+    user_minute: RateLimiter = field(
+        default_factory=lambda: RateLimiter(QUESTIONS_PER_MINUTE_PER_USER)
+    )
+    total_minute: RateLimiter = field(
+        default_factory=lambda: RateLimiter(QUESTIONS_PER_MINUTE_TOTAL)
+    )
+    user_day: DailyLimiter = field(
+        default_factory=lambda: DailyLimiter(QUESTIONS_PER_DAY_PER_USER)
+    )
+    total_day: DailyLimiter = field(
+        default_factory=lambda: DailyLimiter(QUESTIONS_PER_DAY_TOTAL)
+    )
+    llm_slots: ConcurrencyLimiter = field(
+        default_factory=lambda: ConcurrencyLimiter(MAX_CONCURRENT_QUESTIONS)
+    )
+
+    def refusal(self, user: str) -> str | None:
+        """Why this question is not answered, or None after reserving a slot.
+
+        The caller must release ``llm_slots`` when None is returned.
+        """
+        if not self.user_minute.allow(user) or not self.total_minute.allow("all"):
+            return RATE_LIMITED_MESSAGE
+        if not self.llm_slots.try_acquire():
+            return BUSY_MESSAGE
+        # Checked last, so the daily caps count only questions that really
+        # reach the LLM.
+        refusal = None
+        if not self.user_day.allow(user):
+            refusal = USER_DAILY_LIMIT_MESSAGE
+        elif not self.total_day.allow():
+            refusal = DAILY_LIMIT_MESSAGE
+        if refusal is not None:
+            self.llm_slots.release()
+        return refusal
+
+
+def _user_key(update: Update) -> str:
+    # Telegram vouches for the sender's ID, so it cannot be forged the way a
+    # web header can. Channel posts have no sender; the chat stands in.
+    if update.effective_user is not None:
+        return f"user:{update.effective_user.id}"
+    if update.effective_chat is not None:
+        return f"chat:{update.effective_chat.id}"
+    return "unknown"
 
 
 def _format_timestamp(value: datetime | str) -> str:
@@ -118,18 +192,30 @@ async def get_trains_info(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     service: ScheduleService,
+    limits: QuestionLimits,
 ) -> None:
     if not update.message:
         return
     if not update.message.text:
-        _ = await update.message.reply_text("Sorry, I can only process text messages.")
+        _ = await update.message.reply_text(TEXT_ONLY_MESSAGE)
         return
-    # The typing indicator goes out while the question is being analyzed, so
-    # it does not delay the answer.
-    _, answer = await asyncio.gather(
-        _show_typing(update),
-        answer_question(update.message.text, service),
-    )
+    question = " ".join(update.message.text.split())
+    if len(question) > MAX_QUESTION_LENGTH:
+        _ = await update.message.reply_text(QUESTION_TOO_LONG_MESSAGE)
+        return
+    refusal = limits.refusal(_user_key(update))
+    if refusal is not None:
+        _ = await update.message.reply_text(refusal)
+        return
+    try:
+        # The typing indicator goes out while the question is being analyzed,
+        # so it does not delay the answer.
+        _, answer = await asyncio.gather(
+            _show_typing(update),
+            answer_question(question, service),
+        )
+    finally:
+        limits.llm_slots.release()
     if answer.message is not None:
         _ = await update.message.reply_text(answer.message)
         return
@@ -151,7 +237,9 @@ def build_app(token: str, service: ScheduleService) -> Application:
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            functools.partial(get_trains_info, service=service),
+            functools.partial(
+                get_trains_info, service=service, limits=QuestionLimits()
+            ),
         )
     )
     return app
