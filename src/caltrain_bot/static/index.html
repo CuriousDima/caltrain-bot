@@ -95,6 +95,7 @@
   const VISITOR_KEY = "caltrain-visitor";
   const REQUEST_TIMEOUT_MS = 30000;
   const OFFLINE_MESSAGE = "Could not reach the server. Check your connection and try again.";
+  const SERVER_MESSAGE = "Something went wrong on our side. Try again in a moment.";
 
   const $ = (id) => document.getElementById(id);
   const form = $("ask-form");
@@ -254,6 +255,7 @@
     const headers = { "Content-Type": "application/json" };
     const visitor = visitorId();
     if (visitor) headers["X-Visitor-Id"] = visitor;
+    let reached = false;
     try {
       const response = await fetch("api/ask", {
         method: "POST",
@@ -261,11 +263,15 @@
         body: JSON.stringify({ question }),
         signal: controller.signal,
       });
+      reached = true;
       const data = await response.json();
       if (!data || typeof data.status !== "string") throw new Error("Unexpected response");
       return data;
     } catch {
-      return { status: "error", message: OFFLINE_MESSAGE, query: null, trains: [] };
+      // A reply we cannot read (a proxy error page during a restart, say) is
+      // not the rider's connection.
+      const message = reached ? SERVER_MESSAGE : OFFLINE_MESSAGE;
+      return { status: "error", message, query: null, trains: [] };
     } finally {
       clearTimeout(timer);
     }
