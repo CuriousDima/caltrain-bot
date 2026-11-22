@@ -116,7 +116,9 @@ then held back only by the total limits.
   restart resets them.
   Over a limit the endpoint answers `429` (or `503` when all 8 slots are busy)
   without calling the LLM. An answer that takes more than 30 seconds is given
-  up. Questions are capped at 300 characters and request bodies at 8 KB.
+  up. Questions are capped at 300 characters and request bodies at 8 KB. A
+  body that has not arrived within 10 seconds is answered `408`, so a client
+  cannot hold connections open by sending slowly.
 - **Who a client is.** The address in `CF-Connecting-IP`, which Cloudflare sets
   itself; without it, the last `X-Forwarded-For` entry; without that, the
   socket peer. IPv6 addresses are counted per /64 network, because one home or
@@ -141,7 +143,11 @@ then held back only by the total limits.
   redirect to the same address over HTTPS. Requests without that header, such
   as local runs or a private network, are served as they are.
 - **Logs.** Tracebacks are logged without the values of local variables, so a
-  failure does not copy riders' questions or settings into the log.
+  failure does not copy riders' questions or settings into the log. What
+  anyone can trigger at will is kept short: a malformed request is one line
+  without a traceback, and a client that hangs up mid-request is not logged.
+  Cap the container's log size anyway, for example with
+  `--log-opt max-size=10m --log-opt max-file=3`.
 - **Errors.** An unexpected failure is logged and answered with a generic
   `500` JSON error; no exception text reaches the client.
 
@@ -149,8 +155,10 @@ The Telegram bot has the same limits on questions, counted per Telegram user
 instead of per address: 12 questions a minute and 300 a day for one user, 120 a
 minute and 30,000 a day for all users together, 8 questions waiting on the LLM
 at once, and 300 characters per question. A message over a limit gets a short
-reply and costs no LLM call. The bot's counts are separate from the web page's.
-The other protections in this list apply to the web page only.
+reply and costs no LLM call. One user gets at most 3 such replies a minute and
+silence after that, so a flood of messages does not become a flood of replies.
+The bot's counts are separate from the web page's. The other protections in
+this list apply to the web page only.
 
 ### Visitor statistics
 

@@ -379,6 +379,52 @@ def test_ask_limits_how_fast_one_client_can_ask(monkeypatch):
     assert service.schedule_helper.acall.await_count == 3
 
 
+def test_rate_limiter_can_be_asked_without_recording_anything():
+    limiter = web.RateLimiter(limit=1, window_seconds=60)
+
+    assert limiter.has_room("a", now=0)
+    assert limiter.has_room("a", now=0)
+    assert limiter._events == {}
+    assert limiter.allow("a", now=0)
+    assert not limiter.has_room("a", now=59)
+    assert limiter.has_room("a", now=60.5)
+
+
+def test_a_flood_from_many_addresses_is_not_remembered_per_address(monkeypatch):
+    monkeypatch.setattr(web, "QUESTIONS_PER_MINUTE_TOTAL", 3)
+    service = _service()
+    limiters = []
+    rate_limiter = web.RateLimiter
+
+    def remember(*args, **kwargs):
+        limiters.append(rate_limiter(*args, **kwargs))
+        return limiters[-1]
+
+    monkeypatch.setattr(web, "RateLimiter", remember)
+
+    statuses, body = _ask_statuses(
+        service, [{"CF-Connecting-IP": f"198.51.100.{n}"} for n in range(1, 31)]
+    )
+
+    assert statuses == [200] * 3 + [429] * 27
+    assert body == _error_body(web.RATE_LIMITED_MESSAGE)
+    assert service.schedule_helper.acall.await_count == 3
+    # Only the addresses that were answered are kept, however many asked.
+    assert sorted(len(limiter._events) for limiter in limiters) == [1, 3]
+
+
+def test_a_client_over_its_own_limit_does_not_use_up_the_total(monkeypatch):
+    monkeypatch.setattr(web, "QUESTIONS_PER_MINUTE_PER_CLIENT", 1)
+    monkeypatch.setattr(web, "QUESTIONS_PER_MINUTE_TOTAL", 2)
+
+    statuses, _ = _ask_statuses(
+        _service(),
+        [{"CF-Connecting-IP": address} for address in ["1.1.1.1"] * 5 + ["2.2.2.2"]],
+    )
+
+    assert statuses == [200, 429, 429, 429, 429, 200]
+
+
 def test_rate_limiter_allows_events_again_after_the_window():
     limiter = web.RateLimiter(limit=2, window_seconds=60)
 
@@ -861,6 +907,73 @@ def test_unreadable_bodies_are_bad_requests_not_server_errors():
     assert body == _error_body(web.UNREADABLE_REQUEST_MESSAGE)
     _assert_security_headers(response)
     assert logged == []
+
+
+async def _send_half_a_request(host: str, port: int, then_close: bool) -> bytes:
+    """POST to /api/ask over a raw socket, sending only part of the body."""
+    reader, writer = await asyncio.open_connection(host, port)
+    writer.write(
+        b"POST /api/ask HTTP/1.1\r\nHost: caltrain.help\r\n"
+        b"Content-Type: application/json\r\nContent-Length: 100\r\n\r\n"
+        b'{"question": "Palo Alto'
+    )
+    await writer.drain()
+    if then_close:
+        writer.close()
+        await writer.wait_closed()
+        # Give the server a moment to notice.
+        await asyncio.sleep(0.2)
+        return b""
+    try:
+        return await asyncio.wait_for(reader.read(4096), timeout=5)
+    finally:
+        writer.close()
+
+
+def test_a_request_body_that_stalls_is_given_up(monkeypatch):
+    monkeypatch.setattr(web, "REQUEST_BODY_TIMEOUT_SECONDS", 0.05)
+    service = _service()
+
+    async def scenario(client):
+        stalled = await _send_half_a_request(client.host, client.port, then_close=False)
+        afterwards = await client.post("/api/ask", json={"question": "PA to SF"})
+        return stalled, afterwards.status
+
+    stalled, afterwards = _session(web.build_web_app(service), scenario)
+
+    assert stalled.startswith(b"HTTP/1.1 408 ")
+    assert b"X-Content-Type-Options: nosniff" in stalled
+    assert web.SLOW_REQUEST_MESSAGE.encode() in stalled
+    assert afterwards == 200
+    assert service.schedule_helper.acall.await_count == 1
+
+
+def test_a_client_that_hangs_up_mid_request_leaves_nothing_in_the_log():
+    service = _service()
+    logged = []
+
+    async def run():
+        # Served the way production serves it. aiohttp's TestServer cancels a
+        # handler whose client went away; a real server lets it run into a
+        # ConnectionResetError instead.
+        runner = aiohttp_web.AppRunner(web.build_web_app(service))
+        await runner.setup()
+        site = aiohttp_web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        host, port = runner.addresses[0][:2]
+        try:
+            await _send_half_a_request(host, port, then_close=True)
+        finally:
+            await runner.cleanup()
+
+    sink = logger.add(logged.append, level="WARNING")
+    try:
+        asyncio.run(run())
+    finally:
+        logger.remove(sink)
+
+    assert logged == []
+    service.schedule_helper.acall.assert_not_awaited()
 
 
 def test_unexpected_errors_are_logged_and_never_shown_to_the_client():

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -85,3 +86,30 @@ def test_logging_keeps_local_variables_out_of_tracebacks(monkeypatch):
 
     # diagnose=True would print riders' questions with every traceback.
     assert added == [{"diagnose": False}]
+
+
+def test_logging_keeps_tracebacks_of_malformed_requests_out_of_the_log(monkeypatch):
+    monkeypatch.setattr(caltrain_bot.logger, "remove", lambda *args: None)
+    monkeypatch.setattr(caltrain_bot.logger, "add", lambda sink, **options: None)
+    server_logger = logging.getLogger("aiohttp.server")
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    server_logger.addHandler(handler)
+    try:
+        caltrain_bot.configure_logging()
+        # Twice does not stack filters.
+        caltrain_bot.configure_logging()
+        try:
+            raise ValueError("Got more than 8190 bytes when reading")
+        except ValueError:
+            server_logger.exception("Error handling request from %s", "203.0.113.7")
+    finally:
+        server_logger.removeHandler(handler)
+        server_logger.removeFilter(caltrain_bot._WITHOUT_TRACEBACK)
+
+    assert [record.getMessage() for record in records] == [
+        "Error handling request from 203.0.113.7"
+    ]
+    assert records[0].exc_info is None
+    assert server_logger.filters == []

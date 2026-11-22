@@ -184,6 +184,10 @@ def test_helper_uses_reference_datetime_when_departure_time_is_missing(missing_t
         (None, "2026-08-24T19:00"),
         ("san francisco", "2026-08-24T19:00"),
         ("palo alto", "seven-ish"),
+        # Valid ISO 8601, yet outside what a datetime can hold once it is
+        # moved to Caltrain time. Only a prompt injection produces these.
+        ("palo alto", "0001-01-01T00:00+14:00"),
+        ("palo alto", "9999-12-31T23:59-12:00"),
     ],
 )
 def test_helper_rejects_an_incomplete_or_invalid_lookup(

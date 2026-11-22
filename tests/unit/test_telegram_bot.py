@@ -168,7 +168,10 @@ def test_get_trains_info_replies_when_question_analysis_fails():
 
 
 def _ask(limits: QuestionLimits, text: str = "Palo Alto to SF", **sender) -> tuple:
-    """Send one question through the handler; return (reply, LLM call count)."""
+    """Send one question through the handler; return (reply, LLM call count).
+
+    The reply is None when the bot stayed silent.
+    """
     message = SimpleNamespace(
         text=text, reply_text=AsyncMock(), reply_chat_action=AsyncMock()
     )
@@ -194,8 +197,9 @@ def _ask(limits: QuestionLimits, text: str = "Palo Alto to SF", **sender) -> tup
             limits=limits,
         )
     )
-    message.reply_text.assert_awaited_once()
-    return message.reply_text.call_args.args[0], schedule_helper.acall.await_count
+    assert message.reply_text.await_count <= 1
+    reply = message.reply_text.call_args.args[0] if message.reply_text.called else None
+    return reply, schedule_helper.acall.await_count
 
 
 def test_get_trains_info_refuses_an_overlong_question_without_an_llm_call():
@@ -226,6 +230,34 @@ def test_get_trains_info_limits_how_fast_everyone_together_can_ask():
     assert _ask(limits, user_id=1)[1] == 1
     assert _ask(limits, user_id=2)[1] == 1
     assert _ask(limits, user_id=3) == (telegram_bot.RATE_LIMITED_MESSAGE, 0)
+
+
+def test_get_trains_info_stops_replying_to_a_flood_of_refused_messages():
+    limits = QuestionLimits(user_minute=RateLimiter(1), refusal_replies=RateLimiter(2))
+    too_long = "x" * (telegram_bot.MAX_QUESTION_LENGTH + 1)
+
+    assert _ask(limits, user_id=1)[1] == 1
+    assert _ask(limits, user_id=1) == (telegram_bot.RATE_LIMITED_MESSAGE, 0)
+    assert _ask(limits, too_long, user_id=1) == (
+        telegram_bot.QUESTION_TOO_LONG_MESSAGE,
+        0,
+    )
+    assert _ask(limits, user_id=1) == (None, 0)
+    assert _ask(limits, too_long, user_id=1) == (None, 0)
+    # Another rider still hears why their message was turned away.
+    assert _ask(limits, too_long, user_id=2) == (
+        telegram_bot.QUESTION_TOO_LONG_MESSAGE,
+        0,
+    )
+
+
+def test_get_trains_info_keeps_a_flood_from_many_accounts_out_of_the_user_table():
+    limits = QuestionLimits(total_minute=RateLimiter(2))
+
+    for user_id in range(1, 31):
+        _ask(limits, user_id=user_id)
+
+    assert len(limits.user_minute._events) == 2
 
 
 def test_get_trains_info_limits_one_users_questions_per_day():

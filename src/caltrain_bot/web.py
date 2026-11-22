@@ -23,7 +23,12 @@ from caltrain_bot.answers import (
     ScheduleService,
     answer_question,
 )
-from caltrain_bot.limits import ConcurrencyLimiter, DailyLimiter, RateLimiter
+from caltrain_bot.limits import (
+    ConcurrencyLimiter,
+    DailyLimiter,
+    RateLimiter,
+    allow_within_total,
+)
 from caltrain_bot.question_analysis import CALTRAIN_TIMEZONE
 from caltrain_bot.schedule import Train
 
@@ -41,6 +46,9 @@ QUESTIONS_PER_DAY_PER_CLIENT = 300
 MAX_CONCURRENT_QUESTIONS = 8
 # The page stops waiting after 30 seconds, so a slower answer helps nobody.
 ANSWER_TIMEOUT_SECONDS = 30
+# A request body is at most 8 KB. A client that has not finished sending it by
+# now is stalling, and every stalled connection holds a socket open.
+REQUEST_BODY_TIMEOUT_SECONDS = 10
 
 EMPTY_QUESTION_MESSAGE = "Type a question first."
 QUESTION_TOO_LONG_MESSAGE = "That question is too long. Keep it short."
@@ -55,6 +63,7 @@ BUSY_MESSAGE = "Lots of riders are asking right now. Try again in a few seconds.
 JSON_REQUIRED_MESSAGE = "Send the request as application/json."
 CROSS_SITE_MESSAGE = "This request must come from the Caltrain page itself."
 UNREADABLE_REQUEST_MESSAGE = "That request could not be read."
+SLOW_REQUEST_MESSAGE = "That request took too long to arrive. Please try again."
 INTERNAL_ERROR_MESSAGE = "Something went wrong on our side. Please try again."
 
 API_PATH_PREFIX = "/api/"
@@ -311,8 +320,10 @@ async def security_headers_middleware(
         # aiohttp's own answers, such as 404, 405 and 413.
         _set_security_headers(request, error.headers)
         raise
-    except web.RequestPayloadError:
-        # The body could not be read, for example broken compression.
+    except (web.RequestPayloadError, ConnectionError):
+        # The body could not be read: broken compression, or the client hung
+        # up half way. Nothing is logged, because anyone can cause this as
+        # often as they like.
         response = _error(UNREADABLE_REQUEST_MESSAGE, 400)
     except Exception:
         # The details go to the log; the client learns nothing about them.
@@ -328,11 +339,21 @@ async def security_headers_middleware(
 async def api_guard_middleware(
     request: web.Request, handler: Handler
 ) -> web.StreamResponse:
-    """Apply ``reject_cross_site_request`` to every state-changing API route."""
+    """Guard every state-changing API route before its handler runs.
+
+    Applies ``reject_cross_site_request``, then reads the body with a deadline.
+    aiohttp keeps what was read, so the handler's ``request.json()`` does not
+    wait again.
+    """
     if request.method not in _SAFE_METHODS and request.path.startswith(API_PATH_PREFIX):
         rejection = reject_cross_site_request(request)
         if rejection is not None:
             return rejection
+        try:
+            async with asyncio.timeout(REQUEST_BODY_TIMEOUT_SECONDS):
+                await request.read()
+        except TimeoutError:
+            return _error(SLOW_REQUEST_MESSAGE, 408)
     return await handler(request)
 
 
@@ -409,7 +430,7 @@ def build_web_app(service: ScheduleService) -> web.Application:
         if len(question) > MAX_QUESTION_LENGTH:
             return _error(QUESTION_TOO_LONG_MESSAGE, 400)
         client = _client_key(request)
-        if not client_limiter.allow(client) or not total_limiter.allow("all"):
+        if not allow_within_total(client_limiter, total_limiter, client):
             return _error(RATE_LIMITED_MESSAGE, 429)
         if not llm_slots.try_acquire():
             return _error(BUSY_MESSAGE, 503, headers={"Retry-After": "5"})
